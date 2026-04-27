@@ -1,0 +1,36 @@
+# ── 機密 ─────────────────────────────────────────
+# 含明文密碼，絕對不要 commit。.env.example 才是公開範本
+.env
+.env.local
+.env.*.local
+
+# ── 反編譯產物（可隨時用 jadx 重產，且含 API key / source map）─
+take5-decompiled/
+
+# ── 原始 APK（檔案大且為第三方 App）──────────────
+*.apk
+*.xapk
+*.aab
+
+# ── Node / TypeScript ─────────────────────────────
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+.yarn/
+.pnp.*
+
+# ── Logs ──────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── OS / Editor ───────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
