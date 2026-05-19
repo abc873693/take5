@@ -1,0 +1,29 @@
+name: Auto Clock-In Weekdays 9AM
+
+on:
+  schedule:
+    # 平日早上九點 (UTC+8 = 01:00 UTC)
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  clock-in:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Clock in
+        env:
+          COMPANY_CODE: ${{ secrets.COMPANY_CODE }}
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          LATITUDE: ${{ secrets.LATITUDE }}
+          LONGITUDE: ${{ secrets.LONGITUDE }}
+          USE_MACHINE_LOCATION: '1'
+        run: npx -y tsx take5-clock.ts in

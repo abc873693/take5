@@ -1,0 +1,29 @@
+name: Auto Clock-Out Weekdays 6:30PM
+
+on:
+  schedule:
+    # 平日下午六點半 (UTC+8 = 10:30 UTC)
+    - cron: '30 10 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  clock-out:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Clock out
+        env:
+          COMPANY_CODE: ${{ secrets.COMPANY_CODE }}
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          LATITUDE: ${{ secrets.LATITUDE }}
+          LONGITUDE: ${{ secrets.LONGITUDE }}
+          USE_MACHINE_LOCATION: '1'
+        run: npx -y tsx take5-clock.ts out
