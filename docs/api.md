@@ -149,7 +149,7 @@ grant_type=password
 username={email}
 password={password}
 ccode={CompanyCode}        ← 必須用 GetCompany 回的 CompanyCode，不是用戶輸入的 cid
-deviceId={fcm_device_id}    ← 留空可
+deviceId={device_id}        ← 必填，空字串會回 400 {"error":"DeviceIdEmpty"}（見下方說明）
 deviceType=android          ← android | ios | androidchina | wecomios | wecomandroid | other
 ```
 
@@ -165,6 +165,20 @@ Response（標準 OAuth）：
 ```
 
 之後所有 `/api/...` 帶 `Authorization: bearer {access_token}`。
+
+#### `deviceId` 來源（必填）
+
+App 端在 `FcmService.initPush()`（`main.js:5912`）呼叫 `Capacitor Device.getId()` 取得：
+
+| 平台 | 內容 |
+|---|---|
+| Android | `ANDROID_ID`（16 字元 hex 字串） |
+| iOS | `identifierForVendor`（UUID） |
+| Web / 其他 | Capacitor 自行生成的 UUID |
+
+`AuthService.login()`（`main.js:3632`）會把這個值塞進登入表單的 `deviceId`。
+後端只檢查非空字串，空字串會回 `400 {"error":"DeviceIdEmpty"}`，
+所以從外部 script 呼叫時必須帶任意非空字串（建議固定一組以維持同一裝置身分）。
 
 ### `GET {ApiUrl}/api/Employee?id=0` Response（節錄）
 

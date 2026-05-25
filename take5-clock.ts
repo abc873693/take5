@@ -22,6 +22,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 
 // ─── 常數 ─────────────────────────────────────────────────────
 const GROUP_BASE_URL = "https://take5people.net/T5PCompanyAPI";
@@ -154,18 +155,21 @@ class Take5Client {
   async login(opts: {
     email: string;
     password: string;
-    deviceId?: string;
+    deviceId: string; // 後端會驗證非空，空字串會回 400 {"error":"DeviceIdEmpty"}
     deviceType?: DeviceType;
   }): Promise<OAuthToken> {
     if (!this.apiUrl || !this.companyCode) {
       throw new Error("請先呼叫 resolveCompany()");
+    }
+    if (!opts.deviceId) {
+      throw new Error("deviceId 不可為空（後端會回 DeviceIdEmpty）");
     }
     const body = new URLSearchParams({
       grant_type: "password",
       username: opts.email,
       password: opts.password,
       ccode: this.companyCode,
-      deviceId: opts.deviceId ?? "",
+      deviceId: opts.deviceId,
       deviceType: opts.deviceType ?? "android",
     });
     const res = await fetch(`${this.apiUrl}/Token`, {
@@ -246,6 +250,22 @@ function requireEnv(key: string): string {
   return v;
 }
 
+// App 端的 deviceId 來自 Capacitor Device.getId():
+//   - Android: ANDROID_ID（16 字元 hex）
+//   - iOS:     identifierForVendor（UUID）
+// 後端只檢查非空，但建議固定一組，避免每次被當成新裝置上線
+function getOrGenerateDeviceId(): string {
+  const fromEnv = process.env.DEVICE_ID?.trim();
+  if (fromEnv) return fromEnv;
+  const generated = randomBytes(8).toString("hex"); // 模擬 Android ID
+  console.warn(
+    `[warn] DEVICE_ID 未設定，已自動生成: ${generated}\n` +
+      `       建議寫回 .env 以維持同一裝置身分:\n` +
+      `         DEVICE_ID=${generated}`,
+  );
+  return generated;
+}
+
 // Haversine — 兩點之間的地表距離（公尺），跟 App utils.getGPSDistance 同義
 function haversineMeters(
   lat1: number,
@@ -287,10 +307,11 @@ async function main(): Promise<void> {
   }
 
   console.log("[2/4] 登入:", email);
+  const deviceId = getOrGenerateDeviceId();
   const token = await client.login({
     email,
     password,
-    deviceId: process.env.DEVICE_ID ?? "",
+    deviceId,
     deviceType: (process.env.DEVICE_TYPE as DeviceType) ?? "android",
   });
   console.log(
