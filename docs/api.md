@@ -1,6 +1,6 @@
 # Take5 Portal — 後端 API 盤點
 
-從 `take5.apk` v2.0.2 還原。**共 65 個 `/api/` endpoint**（不含 `/Token` 與 Push 服務）。
+從 `take5.apk` v2.0.2 還原。**共 68 個 `/api/` endpoint**（不含 `/Token` 與 Push 服務）。
 所有路徑除了 `/Token` 外都在 `/api/` 之下。
 
 > **打卡核心 API 共 7 支**（已確認沒有遺漏）：3 支 ATS + 4 支 ClockInOut2。
@@ -91,10 +91,13 @@ App 沒有獨立「補打卡」endpoint。**補打卡實際上是用 `WorkflowFo
 | Method | Path | 用途 |
 |---|---|---|
 | POST | `/api/WorkflowForm/Apply` | 提交申請（補打卡、加班、請假、調班…） |
+| GET | `/api/WorkflowForm/GetApplicationTypes` | **可申請的表單清單（formcode 權威來源）** |
 | GET | `/api/WorkflowForm/GetFormInfo` | 取單一表單詳情 |
 | GET | `/api/WorkflowForm/GetAllRefLookup` | 表單參考資料（下拉選單來源） |
 | POST | `/api/WorkflowForm/Approve` | 核准 |
 | POST | `/api/WorkflowForm/Refuse` | 退回 |
+| POST | `/api/WorkflowForm/BatchApprove` | 批次核准 |
+| POST | `/api/WorkflowForm/BatchRefuse` | 批次退回 |
 | POST | `/api/WorkflowForm/Cancel` | 取消 |
 | POST | `/api/WorkflowForm/Delete` | 刪除 |
 | GET | `/api/WorkflowForm/GetMyApplications` | 我的申請（總覽） |
@@ -109,6 +112,83 @@ App 沒有獨立「補打卡」endpoint。**補打卡實際上是用 `WorkflowFo
 | GET | `/api/WorkflowForm/GetPendingMonitorList` | 待監看（管理） |
 | GET | `/api/WorkflowForm/GetPendingLeaveMonitorList` | 待監看請假 |
 
+#### 動態表單機制（請假 / 加班 / 補打卡共用）
+
+請假、加班、補打卡、調班**沒有各自的 endpoint**，全部走 `WorkflowForm` 這套
+metadata-driven 動態表單引擎，靠 `formcode` 區分類型。`formcode` 由後端設定，
+App 端不寫死，所以整合前必須先「發現」公司有哪些 formcode、再取其欄位定義。
+
+送出流程固定四步：
+
+0. **`GET /api/WorkflowForm/GetApplicationTypes`** — **formcode 的權威來源**。
+   App 新增申請頁（`dynamic.new_form`）用這支拉「可申請的表單清單」。回傳
+   `{ ApplicationTypes: [...], DelegateApplicationTypes: { applications, applicants } }`，
+   每個 item 帶 `folder` / `folderOrder`（分類）與完整 requestInfo 欄位（含
+   `formcode` / `formtype` / `typename`）。App 點某張卡就是把**整個 item** 當
+   `tablekey` 丟進下一步。舊後端若回 404，fallback 打 `?isDelegate=false` /
+   `?isDelegate=true`（回傳直接是陣列）。
+1. **`GET /api/WorkflowForm/GetFormInfo`** — 帶 `requestInfo`（即上一步的 item，
+   對應 `RequestInfo` model），回傳該表單欄位定義 `forms[]`（每欄有 `allowEdit` /
+   `readOnly` / `formType` / `allowAdd`）。**這步決定要填哪些欄位**。
+2. （請假/加班專屬試算）請假呼叫 `leavecheck` / `leavecalc`；加班呼叫
+   `EmpOT/GetOTCodeByDateType`（見下節）。
+3. **`POST /api/WorkflowForm/Apply`** — `multipart/form-data`，兩個關鍵欄位：
+
+```jsonc
+// formData 欄位 1: requestInfo (= RequestInfo(tablekeyobj) 的 JSON 字串)
+// formData 欄位 2: applyInfo   (JSON.stringify 後)
+{
+  "isDraft": false,
+  "applyInfo": [ /* rowdatasselect：依 GetFormInfo 欄位定義填的列資料 */ ],
+  "deleteAttachments": [],
+  "addAttachments": [ { "Name": "...", "Description": "" } ], // 對應 Attachment_0、Attachment_1...
+  "runTimeApproverGroups": [],
+  "mustAllApprove": [],
+  "notes": ""
+}
+// 附件另外用 formData.append("Attachment_" + i, blob, filename)
+```
+
+`operation` 切換動作：`post`→`Apply`、`approve`→`PUT Approve`、`refuse`→`PUT Refuse`、`delete`→`DELETE Delete`。
+
+`requestInfo` 經 `RequestInfo` model 過濾，只保留白名單欄位（`main.js` model
+`RequestInfo.ts`）；建立新申請最少要 `formcode`，多數表單還需 `formtype`。完整欄位：
+
+```
+applicant, forminstanceid, workflowinstanceid, applicationtype, applicationversion,
+workflowcode, positioncode, action, submityype, workflowstatus, step, workflowstep,
+stepstatus, payrollgroupid, formcode, formtype, listformtype, arguments, inputarguments,
+writable, monitor, monitorapp, inconsult, consultempId, enquirername, noreply, showreply,
+runtimeApprover, allapprove, nextautoapprove, nextstepruntime, approver, delegateApprover,
+isnextruntimeapprover, applicationversion_code, workflowstatus_code, stepstatus_code, submittype
+```
+
+> ⚠️ `applyInfo[]` **沒有固定 schema**，內容完全由 `GetFormInfo` 回的欄位定義驅動，
+> 每家公司、每種表單都可能不同。整合前一定要先對目標表單實打一次 `GetFormInfo`。
+
+#### 用 `take5-clock.ts` 探測表單
+
+`take5-clock.ts` 內建三支探測子指令，沿用既有的「解析公司 → 登入」流程：
+
+```bash
+# 1) 發現 formcode：列出「可申請的表單」(權威來源，新人沒歷史單也查得到)
+npx tsx take5-clock.ts applytypes
+
+# 2) dump 表單欄位 schema
+npx tsx take5-clock.ts forminfo <formcode> [formtype]
+npx tsx take5-clock.ts forminfo '{"formcode":"...","formtype":1,"applicationtype":"..."}'
+
+# (備案) 從既有申請單反查 formcode
+npx tsx take5-clock.ts forms my-leave-pendings   # 請假類
+npx tsx take5-clock.ts forms my-closed           # 已結案（含加班等其他類）
+```
+
+- `applytypes` 打 `GetApplicationTypes`，每筆輸出
+  `{folder, formcode, formtype, typename, applicationtype}`。**這是找 formcode 的首選**。
+- `forms` 打 `GetMy*ApplicationsList`，從歷史申請反查；alias：`my-pendings`（預設）、
+  `my-leave-pendings`、`my-closed`、`my-leave-closed`，也可直接給 `/api/...` 路徑。
+- 兩者輸出的每筆都可**整包丟給 `forminfo`** 最保險（欄位齊全）。
+
 ### 請假 / 加班計算
 
 | Method | Path | 用途 |
@@ -117,6 +197,77 @@ App 沒有獨立「補打卡」endpoint。**補打卡實際上是用 `WorkflowFo
 | POST | `/api/leavecalc` | 同上的另一個大小寫變體（IIS 通常 case-insensitive） |
 | POST | `/api/leavecheck` | 請假驗證（是否符合規則） |
 | GET | `/api/EmpOT/GetOTCodeByDateType` | 加班碼查詢（依日期類型） |
+
+### 請假 / 加班表單欄位（GetFormInfo 實測）
+
+> 以下為 ACME（`applicationtype` 後綴 `TW`）實際 `GetFormInfo` 回傳結果。
+> `applyInfo[]` 內每筆物件的 key 用 **`columnName`**；下拉值直接內嵌在回傳的
+> `lookups`（key 格式 `<table>.<column>`），**不必另外打 `GetAllRefLookup`**。
+> `fieldType`：`0=NVARCHAR 1=DATETIME 2=Integer 3=Boolean 4=NText 5=Float 6=TextInfo 7=File`。
+
+#### 休假申請 `cf_wf_LeaveApp`（table `empleavedata`，23 欄）
+
+實際要填（required 且非 readOnly/hide）：
+
+| columnName | 欄位 | type | 必填 | 備註 |
+|---|---|---|:---:|---|
+| `empleavedata_empid` | 員工 | Integer | ✓ | KEY/RO，帶自己的 empid |
+| `empleavedata_leavecode` | 休假類型 | NVARCHAR | ✓ | lookup（見下） |
+| `empleavedata_specifyfromdate` | 休假開始日 | DATETIME | ✓ | |
+| `empleavedata_specifytodate` | 休假結束日 | DATETIME | ✓ | |
+| `empleavedata_leavefromtime` | 開始時間 | DATETIME | ✓ | |
+| `empleavedata_leavetotime` | 結束時間 | DATETIME | ✓ | |
+| `empleavedata_substitute` | 職務代理人 | NVARCHAR | ✓ | lookup `uvw_TW_emphr`，送 **empcode**（見下） |
+
+計算 / 條件欄位（不主動填，或依 leavecode 由 `formEvent` JS 動態顯隱）：
+`leavehours` / `leavedays` / `applyleavehours`（由 `leavecalc`/`leavecheck` 回填）、
+`relation`（喪假等才出現）、`leavesubcode`（產假才出現）、`prebirthdate`（婚/喪/產事件日）、
+`notes`（備註，選填）。
+
+**休假類型 `leavecode`（lookup `uvw_tw_leavetype.leavecode`）：**
+
+```
+TW_AL 法定及非法定特休   TW_PL 事假     TW_SL 病假      TW_ML 生理假
+TW_FL 喪假             TW_WL 婚假     TW_MTL 產假     TW_PEL 產檢假
+TW_PTL 陪產檢及陪產假    TW_OL 公假     TW_OSL 公傷病假  TW_FCL 家庭照顧假
+TW_CL 加班補休         TW_RL 安胎假    TW_JHL 謀職假   TW_BDL 生日假
+TW_TH 颱風假           TW_WFH 在家工作
+```
+
+產假子類型 `leavesubcode`：`01`=8個月以上 / `02`=3個月以上 / `03`=2個月以上 / `04`=2個月以下。
+親屬關係 `relation`：`01`~`31` 代碼表（`01`父 `02`母 `03`配偶 … 喪假才需要）。
+
+#### 加班申請 `cf_wf_OvertimeApp`（table `empotdata`，15 欄）
+
+| columnName | 欄位 | type | 必填 | 備註 |
+|---|---|---|:---:|---|
+| `empotdata_empid` | 申請人 | Integer | ✓ | KEY/RO，帶自己的 empid |
+| `empotdata_otdate` | 加班日期 | DATETIME | ✓ | |
+| `empotdata_otcode` | 加班類型 | NVARCHAR | ✓ | lookup（見下） |
+| `empotdata_otfrom` | 開始時間 | DATETIME | ✓ | |
+| `empotdata_otto` | 結束時間 | DATETIME | ✓ | |
+| `empotdata_notes` | 事由 | NText | ✓ | |
+
+選填 / 計算 / 旗標：`nextdayfrom` / `nextdayto`（跨次日 Boolean）、`othours`（由起訖算出）、
+`mealhour`（用餐時數 RO，後端帶）、`expectcl`（轉補休；未勾＝發加班費 Boolean）、
+`priorapp`（事先申請 Boolean，**default `1`**）。
+
+**加班類型 `otcode`（lookup `ottype.otcode`）——台灣用 `TWOT*`：**
+
+```
+TWOT01 工作日加班   TWOT02 休息日加班   TWOT03 國定假日加班   TWOT04 例假日加班
+```
+
+> `OT01`~`OT03` 是中國版代碼（`applicationtype` 非 TW 時），台灣別用。
+
+#### 職務代理人 `empleavedata_substitute`
+
+- `fieldType=0`（NVARCHAR，長度 50）、`lookup=true`、`multiSelected=false`（單選）。
+- lookup 來源 `uvw_TW_emphr`（key `uvw_tw_emphr.empcode`），map 為 `empcode → 員工姓名`，
+  ACME 共 69 筆。
+- ⚠️ **送出值是 `empcode`（員工代碼字串，如 `1002060`），不是 `empid`、也不是姓名。**
+  注意與 `empleavedata_empid` 不同：員工欄位 ref `emphr.empid`（數字 empid），
+  代理人欄位 ref `uvw_TW_emphr.empcode`（字串 empcode），兩者來源不同別混用。
 
 ### 影響打卡頁顯示
 
@@ -247,12 +398,15 @@ GET  /api/ClockInOut2/GetOutsideInOutState
 GET  /api/ClockInOut2/GetOutSideClockInOutListByEmpId
 GET  /api/ClockInOut2/GetOutSideLocationList
 
-# ── 補打卡 / 簽核（WorkflowForm，18）────────────────
+# ── 補打卡 / 簽核（WorkflowForm，21）────────────────
 POST /api/WorkflowForm/Apply
+GET  /api/WorkflowForm/GetApplicationTypes
 GET  /api/WorkflowForm/GetFormInfo
 GET  /api/WorkflowForm/GetAllRefLookup
 POST /api/WorkflowForm/Approve
 POST /api/WorkflowForm/Refuse
+POST /api/WorkflowForm/BatchApprove
+POST /api/WorkflowForm/BatchRefuse
 POST /api/WorkflowForm/Cancel
 POST /api/WorkflowForm/Delete
 GET  /api/WorkflowForm/GetMyApplications
