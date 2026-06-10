@@ -15,7 +15,13 @@ npx tsx take5-clock.ts            # 走 .env，預設下班打卡
 npx tsx take5-clock.ts in         # 上班
 npx tsx take5-clock.ts out        # 下班
 DEBUG=1 npx tsx take5-clock.ts    # 印詳細 debug 訊息
+
+# 探測請假 / 加班等簽核表單（WorkflowForm 動態表單）
+npx tsx take5-clock.ts applytypes                # 列可申請表單，找 formcode（首選）
+npx tsx take5-clock.ts forminfo <formcode> 1     # dump 表單欄位 schema
 ```
+
+`forms` / `forminfo` 子指令說明見 [`docs/api.md`](docs/api.md) 的「動態表單機制」一節。
 
 ## `.env` 變數
 

@@ -216,6 +216,56 @@ class Take5Client {
     }
     return (await res.json()) as ClockInOutResponse;
   }
+
+  /**
+   * 取簽核清單。回傳是陣列，每個 item 本身就是可餵回 getFormInfo() 的
+   * requestInfo（App 內的 tablekeyobj）。常用來「發現」公司有哪些 formcode。
+   * @param path 例如 /api/WorkflowForm/GetMyPendingApplicationsList
+   */
+  async getWorkflowList(path: string): Promise<unknown> {
+    const res = await fetch(`${this.apiUrl}${path}`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`GetWorkflowList failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  }
+
+  /**
+   * GET /api/WorkflowForm/GetApplicationTypes — 取「可申請的表單清單」。
+   * 這是 formcode 的權威來源（App 新增申請頁用的）。回傳每個 item 本身就是
+   * 可餵回 getFormInfo() / Apply 的 tablekey(requestInfo)。
+   * 新後端回 { ApplicationTypes, DelegateApplicationTypes }；舊後端回陣列。
+   */
+  async getApplicationTypes(isDelegate = false): Promise<unknown> {
+    const qs = new URLSearchParams({ isDelegate: String(isDelegate) });
+    const res = await fetch(
+      `${this.apiUrl}/api/WorkflowForm/GetApplicationTypes?${qs.toString()}`,
+      { headers: this.authHeaders() },
+    );
+    if (!res.ok) {
+      throw new Error(`GetApplicationTypes failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  }
+
+  /**
+   * GET /api/WorkflowForm/GetFormInfo — 取單一表單的欄位定義（dynamic form schema）。
+   * requestInfo 對應 App 的 RequestInfo model；建立新申請時最少要帶 formcode，
+   * 多數表單還需要 formtype。可把 getWorkflowList() 回的某個 item 整包丟進來。
+   */
+  async getFormInfo(requestInfo: Record<string, unknown>): Promise<unknown> {
+    const qs = new URLSearchParams({ requestInfo: JSON.stringify(requestInfo) });
+    const res = await fetch(
+      `${this.apiUrl}/api/WorkflowForm/GetFormInfo?${qs.toString()}`,
+      { headers: this.authHeaders() },
+    );
+    if (!res.ok) {
+      throw new Error(`GetFormInfo failed: ${res.status} ${await res.text()}`);
+    }
+    return res.json();
+  }
 }
 
 // ─── .env loader（無依賴，極簡版） ─────────────────────────────
@@ -283,18 +333,130 @@ function haversineMeters(
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-// ─── main ─────────────────────────────────────────────────────
-async function main(): Promise<void> {
-  loadEnv();
+// ─── 共用：解析公司 + 登入 ────────────────────────────────────
+async function connect(): Promise<Take5Client> {
+  const companyCode = requireEnv("COMPANY_CODE");
+  const email = requireEnv("EMAIL");
+  const password = requireEnv("PASSWORD");
 
+  const client = new Take5Client();
+  const company = await client.resolveCompany(companyCode);
+  console.log("[connect] ApiUrl =", company.ApiUrl);
+  const deviceId = getOrGenerateDeviceId();
+  await client.login({
+    email,
+    password,
+    deviceId,
+    deviceType: (process.env.DEVICE_TYPE as DeviceType) ?? "android",
+  });
+  console.log("[connect] 已登入:", email);
+  return client;
+}
+
+// ─── 子指令：可申請表單清單（formcode 權威來源）──────────────
+async function runApplyTypes(): Promise<void> {
+  const client = await connect();
+  console.log("[applytypes] GET /api/WorkflowForm/GetApplicationTypes");
+  const raw = (await client.getApplicationTypes(false)) as
+    | { ApplicationTypes?: Array<Record<string, unknown>> }
+    | Array<Record<string, unknown>>;
+  // 新後端回物件 { ApplicationTypes, ... }；舊後端直接回陣列
+  const types: Array<Record<string, unknown>> = Array.isArray(raw)
+    ? raw
+    : raw.ApplicationTypes ?? [];
+  if (types.length === 0) {
+    console.log("（沒有可申請的表單，可能此帳號未開放申請或公司未設定）");
+    if (process.env.DEBUG) console.log(JSON.stringify(raw, null, 2));
+    return;
+  }
+  console.log(`共 ${types.length} 種可申請表單。每筆可整包餵回 forminfo：\n`);
+  for (const item of types) {
+    const pick = {
+      folder: item.folder,
+      formcode: item.formcode,
+      formtype: item.formtype,
+      typename: item.typename,
+      applicationtype: item.applicationtype,
+    };
+    console.log(JSON.stringify(pick));
+  }
+  if (process.env.DEBUG) {
+    console.log("\n[DEBUG] 原始回傳:\n", JSON.stringify(raw, null, 2));
+  }
+}
+
+// ─── 子指令：簽核清單（發現可用 formcode）────────────────────
+// list item 本身就是可餵回 getFormInfo() 的 requestInfo
+const WORKFLOW_LIST_ALIASES: Record<string, string> = {
+  "my-pendings": "/api/WorkflowForm/GetMyPendingApplicationsList",
+  "my-leave-pendings": "/api/WorkflowForm/GetMyPendingLeaveApplicationsList",
+  "my-closed": "/api/WorkflowForm/GetMyClosedApplicationsList",
+  "my-leave-closed": "/api/WorkflowForm/GetMyClosedLeaveApplicationsList",
+};
+
+async function runForms(): Promise<void> {
+  // 第 3 個 argv：alias（見上表）或直接給 /api/... 路徑，預設 my-pendings
+  const arg = process.argv[3] ?? "my-pendings";
+  const path = arg.startsWith("/api/") ? arg : WORKFLOW_LIST_ALIASES[arg];
+  if (!path) {
+    throw new Error(
+      `未知的清單別名 "${arg}"。可用：${Object.keys(WORKFLOW_LIST_ALIASES).join(", ")}（或直接給 /api/... 路徑）`,
+    );
+  }
+  const client = await connect();
+  console.log("[forms] GET", path);
+  const list = (await client.getWorkflowList(path)) as Array<Record<string, unknown>>;
+  if (!Array.isArray(list) || list.length === 0) {
+    console.log("（清單為空，換個別名試試，或先在 App 送一張申請單）");
+    return;
+  }
+  console.log(`共 ${list.length} 筆。各 item 可整包餵回 forminfo：\n`);
+  for (const item of list) {
+    // 挑出做 GetFormInfo 探測會用到的關鍵欄位
+    const pick = {
+      formcode: item.formcode,
+      formtype: item.formtype,
+      typename: item.typename,
+      applicationtype: item.applicationtype,
+      forminstanceid: item.forminstanceid,
+    };
+    console.log(JSON.stringify(pick));
+  }
+  if (process.env.DEBUG) {
+    console.log("\n[DEBUG] 原始 list:\n", JSON.stringify(list, null, 2));
+  }
+}
+
+// ─── 子指令：GetFormInfo（dump 表單欄位 schema）──────────────
+async function runFormInfo(): Promise<void> {
+  // forminfo <formcode> [formtype]    或    forminfo '{"formcode":"...",...}'
+  const a3 = process.argv[3];
+  if (!a3) {
+    throw new Error(
+      "用法：forminfo <formcode> [formtype]  或  forminfo '<requestInfo JSON>'",
+    );
+  }
+  let requestInfo: Record<string, unknown>;
+  if (a3.trim().startsWith("{")) {
+    requestInfo = JSON.parse(a3);
+  } else {
+    requestInfo = { formcode: a3 };
+    if (process.argv[4]) requestInfo.formtype = process.argv[4];
+  }
+  const client = await connect();
+  console.log("[forminfo] requestInfo =", JSON.stringify(requestInfo));
+  const info = await client.getFormInfo(requestInfo);
+  console.log(JSON.stringify(info, null, 2));
+}
+
+// ─── 子指令：打卡（原本的流程）───────────────────────────────
+async function runClock(inOutArg?: string): Promise<void> {
   const companyCode = requireEnv("COMPANY_CODE");
   const email = requireEnv("EMAIL");
   const password = requireEnv("PASSWORD");
   const lat = requireEnv("LATITUDE");
   const lng = requireEnv("LONGITUDE");
-  // argv 可覆寫 .env 的 IN_OUT
-  const inOutArg = process.argv[2] ?? process.env.IN_OUT;
-  const inOut = inOutArg === "in"; // 'in' → true(上班), 其他 → false(下班/統一打卡)
+  const inOut = (inOutArg ?? process.env.IN_OUT) === "in"; // 'in' → true(上班), 其他 → false(下班/統一打卡)
 
   const client = new Take5Client();
 
@@ -392,6 +554,21 @@ async function main(): Promise<void> {
     ValidType: ClockValidType.GPS,
   });
   console.log("✓ 打卡成功:", result.Time);
+}
+
+// ─── main：依子指令分派 ───────────────────────────────────────
+//   npx tsx take5-clock.ts                  → 打卡（依 .env IN_OUT）
+//   npx tsx take5-clock.ts in|out           → 打卡（覆寫 IN_OUT）
+//   npx tsx take5-clock.ts applytypes       → 列可申請表單（formcode 權威來源）
+//   npx tsx take5-clock.ts forms [alias]    → 列既有申請單（formcode 備案來源）
+//   npx tsx take5-clock.ts forminfo <code>  → dump 表單欄位 schema
+async function main(): Promise<void> {
+  loadEnv();
+  const sub = process.argv[2];
+  if (sub === "applytypes") return runApplyTypes();
+  if (sub === "forms") return runForms();
+  if (sub === "forminfo") return runFormInfo();
+  return runClock(sub); // sub 為 in|out|undefined
 }
 
 main().catch((e: unknown) => {
