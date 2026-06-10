@@ -20,7 +20,7 @@
  * 或掃 iBeacon UUID，後端只看 ValidType 與座標。
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -300,19 +300,50 @@ function requireEnv(key: string): string {
   return v;
 }
 
+// 把生成的 DEVICE_ID 寫回 .env：有既有的 DEVICE_ID= 行就就地更新，否則 append。
+// 回傳是否成功寫入。
+function persistDeviceId(id: string, path = ".env"): boolean {
+  const full = resolve(process.cwd(), path);
+  let raw = "";
+  try {
+    raw = readFileSync(full, "utf8");
+  } catch {
+    raw = ""; // 沒有 .env 就建一個新的
+  }
+  const line = `DEVICE_ID=${id}`;
+  if (/^DEVICE_ID=.*$/m.test(raw)) {
+    raw = raw.replace(/^DEVICE_ID=.*$/m, line);
+  } else {
+    if (raw.length && !raw.endsWith("\n")) raw += "\n";
+    raw += line + "\n";
+  }
+  try {
+    writeFileSync(full, raw, "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // App 端的 deviceId 來自 Capacitor Device.getId():
 //   - Android: ANDROID_ID（16 字元 hex）
 //   - iOS:     identifierForVendor（UUID）
-// 後端只檢查非空，但建議固定一組，避免每次被當成新裝置上線
+// 後端只檢查非空，但要固定一組，避免每次被當成新裝置上線。
+// 沒設定時自動生成並寫回 .env，下次沿用同一份。
 function getOrGenerateDeviceId(): string {
   const fromEnv = process.env.DEVICE_ID?.trim();
   if (fromEnv) return fromEnv;
   const generated = randomBytes(8).toString("hex"); // 模擬 Android ID
-  console.warn(
-    `[warn] DEVICE_ID 未設定，已自動生成: ${generated}\n` +
-      `       建議寫回 .env 以維持同一裝置身分:\n` +
-      `         DEVICE_ID=${generated}`,
-  );
+  process.env.DEVICE_ID = generated; // 本次執行後續也用同一份
+  const saved = persistDeviceId(generated);
+  if (saved) {
+    console.warn(`[warn] DEVICE_ID 未設定，已自動生成並寫回 .env: ${generated}`);
+  } else {
+    console.warn(
+      `[warn] DEVICE_ID 未設定，已自動生成: ${generated}\n` +
+        `       （寫回 .env 失敗，請手動加上 DEVICE_ID=${generated} 以維持同一裝置身分）`,
+    );
+  }
   return generated;
 }
 
