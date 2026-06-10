@@ -4,6 +4,9 @@
 .env.local
 .env.*.local
 
+# ── 含同事個資（員工代碼/姓名），不要 commit ──────
+docs/substitute-list.json
+
 # ── 反編譯產物（可隨時用 jadx 重產，且含 API key / source map）─
 take5-decompiled/
 
