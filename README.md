@@ -20,9 +20,13 @@ DEBUG=1 npx tsx take5-clock.ts    # 印詳細 debug 訊息
 npx tsx take5-clock.ts applytypes                # 列可申請表單，找 formcode（首選）
 npx tsx take5-clock.ts forminfo <formcode> 1     # dump 表單欄位 schema
 
-# 加班申請（預設存草稿；--send 才正式送簽核）
+# 加班申請（預設 dry-run 只印 payload 不寫入；--send 才正式送並自動查狀態）
 npx tsx take5-clock.ts apply-ot 2026/06/20 11:00 18:00 "加班事由"
 npx tsx take5-clock.ts apply-ot 2026/06/20 11:00 18:00 "加班事由" --send
+
+# 查我的申請單狀態（審核中 + 已結案）
+npx tsx take5-clock.ts status                    # 全部
+npx tsx take5-clock.ts status cf_wf_OvertimeApp  # 只看加班
 ```
 
 `forms` / `forminfo` 子指令說明見 [`docs/api.md`](docs/api.md) 的「動態表單機制」一節。

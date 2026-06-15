@@ -663,17 +663,56 @@ async function runApplyOt(): Promise<void> {
   );
 
   if (!send) {
-    console.log("\n[apply-ot] 以 isDraft=true 存草稿（加 --send 才正式送簽核）…");
-    const res = await client.applyWorkflowForm(requestInfo, [row], { isDraft: true, notes });
-    console.log("✓ 已存草稿。請到 App 確認欄位無誤後刪除或正式送出。");
-    console.log("  回應:", JSON.stringify(res));
+    // dry-run：只在本地印出 payload 供檢查，完全不寫入後端（不留草稿）
+    console.log("\n[apply-ot] dry-run（未送出，未建立任何草稿）。確認上面無誤後，加 --send 正式送出。");
     return;
   }
 
-  console.log("\n[apply-ot] --send：以 isDraft=false 正式送出簽核…");
+  console.log("\n[apply-ot] --send：正式送出簽核…");
   const res = await client.applyWorkflowForm(requestInfo, [row], { isDraft: false, notes });
-  console.log("✓ 已送出加班申請。");
-  console.log("  回應:", JSON.stringify(res));
+  console.log("✓ 已送出加班申請。回應:", JSON.stringify(res));
+
+  // 送出後自動查狀態，確認真的進系統（免去開 App 檢查）
+  console.log("\n[apply-ot] 查詢送出後的加班申請狀態…");
+  await printApplicationStatus(client, OT_FORMCODE);
+}
+
+// ─── 子指令：查申請單狀態 ─────────────────────────────────────
+// status [formcode]    不帶 formcode 列全部；帶了只列該類型
+function asArray(x: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(x) ? (x as Array<Record<string, unknown>>) : [];
+}
+
+async function printApplicationStatus(client: Take5Client, filterFormcode?: string): Promise<void> {
+  const [pending, closed] = await Promise.all([
+    client.getWorkflowList("/api/WorkflowForm/GetMyPendingApplicationsList"),
+    client.getWorkflowList("/api/WorkflowForm/GetMyClosedApplicationsList"),
+  ]);
+  const rows = [
+    ...asArray(pending).map((r) => ({ bucket: "審核中", ...r })),
+    ...asArray(closed).map((r) => ({ bucket: "已結案", ...r })),
+  ].filter((r) => !filterFormcode || r.formcode === filterFormcode);
+
+  if (rows.length === 0) {
+    console.log(filterFormcode ? `（沒有 ${filterFormcode} 的申請）` : "（目前沒有任何申請）");
+    return;
+  }
+  // 依送出時間新→舊
+  rows.sort((a, b) => String(b.submittime ?? "").localeCompare(String(a.submittime ?? "")));
+  for (const r of rows) {
+    console.log(
+      `#${r.forminstanceid}  ${r.typename}  [${r.bucket}/${r.workflowstatus ?? "?"}]` +
+        `  送出 ${r.submittime ?? "-"}` +
+        `${r.endtime ? `  結案 ${r.endtime}` : ""}`,
+    );
+  }
+}
+
+async function runStatus(): Promise<void> {
+  const filter = process.argv.slice(3).filter((a) => !a.startsWith("--"))[0];
+  const client = await connect();
+  console.log(filter ? `[status] 申請單狀態（formcode=${filter}）` : "[status] 我的申請單狀態");
+  await printApplicationStatus(client, filter);
 }
 
 // ─── 子指令：打卡（原本的流程）───────────────────────────────
@@ -789,7 +828,8 @@ async function runClock(inOutArg?: string): Promise<void> {
 //   npx tsx take5-clock.ts applytypes       → 列可申請表單（formcode 權威來源）
 //   npx tsx take5-clock.ts forms [alias]    → 列既有申請單（formcode 備案來源）
 //   npx tsx take5-clock.ts forminfo <code>  → dump 表單欄位 schema
-//   npx tsx take5-clock.ts apply-ot ...     → 加班申請（預設存草稿，--send 才送）
+//   npx tsx take5-clock.ts apply-ot ...     → 加班申請（預設 dry-run，--send 才送並查狀態）
+//   npx tsx take5-clock.ts status [formcode]→ 查我的申請單狀態（審核中 + 已結案）
 async function main(): Promise<void> {
   loadEnv();
   const sub = process.argv[2];
@@ -797,6 +837,7 @@ async function main(): Promise<void> {
   if (sub === "forms") return runForms();
   if (sub === "forminfo") return runFormInfo();
   if (sub === "apply-ot") return runApplyOt();
+  if (sub === "status") return runStatus();
   return runClock(sub); // sub 為 in|out|undefined
 }
 
