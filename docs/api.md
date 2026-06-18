@@ -205,9 +205,15 @@ npx tsx take5-clock.ts forms my-closed           # 已結案（含加班等其�
 | Method | Path | 用途 |
 |---|---|---|
 | POST | `/api/LeaveCalc` | 請假計算（時數試算） |
+| GET | `/api/LeaveCalc` | **假別額度/餘額**（無 body）；回 `{ EmpLeaveInfo: [...] }`，App 假別額度頁用 |
 | POST | `/api/leavecalc` | 同上的另一個大小寫變體（IIS 通常 case-insensitive） |
 | POST | `/api/leavecheck` | 請假驗證（是否符合規則） |
 | GET | `/api/EmpOT/GetOTCodeByDateType` | 加班碼查詢（依日期類型） |
+
+`GET /api/LeaveCalc` 的 `EmpLeaveInfo[]` 每筆關鍵欄位：`leaveCode`（如 `TW_AL` 特休）、
+`leaveName`、`totalEntitlement`（可用）、`leaveTaken`（已用）、`leaveBalance`（剩餘）、
+`periodBegin`/`periodEnd`（額度期間）、`displayUnit`（0=天, 1=小時）。
+`take5-clock.ts leave` 即呼叫此支。
 
 ### 請假 / 加班表單欄位（GetFormInfo 實測）
 

@@ -284,6 +284,18 @@ class Take5Client {
   }
 
   /**
+   * GET /api/LeaveCalc（無 body）— 取假別額度/餘額。對應 App leave-entitle 頁的
+   * EmployeeService.getLeaveInfo()，回傳 { EmpLeaveInfo: [...] }。
+   */
+  async getLeaveInfo(): Promise<{ EmpLeaveInfo?: Array<Record<string, unknown>>; [k: string]: unknown }> {
+    const res = await fetch(`${this.apiUrl}/api/LeaveCalc`, { headers: this.authHeaders() });
+    if (!res.ok) {
+      throw new Error(`GetLeaveInfo failed: ${res.status} ${await res.text()}`);
+    }
+    return (await res.json()) as { EmpLeaveInfo?: Array<Record<string, unknown>> };
+  }
+
+  /**
    * POST /api/WorkflowForm/Apply — 送出/存草稿動態表單申請（multipart/form-data）。
    * requestInfo = applytypes 的某筆 item（會過 RequestInfo 白名單）；
    * rows = applyInfo 的列資料陣列（每筆 key 用 columnName）。
@@ -715,6 +727,31 @@ async function runStatus(): Promise<void> {
   await printApplicationStatus(client, filter);
 }
 
+// ─── 子指令：假別額度/餘額（GET /api/LeaveCalc）──────────────
+async function runLeave(): Promise<void> {
+  const client = await connect();
+  const info = await client.getLeaveInfo();
+  const list = info.EmpLeaveInfo ?? [];
+  if (list.length === 0) {
+    console.log("（沒有假別額度資料）");
+    if (process.env.DEBUG) console.log(JSON.stringify(info, null, 2));
+    return;
+  }
+  console.log("[leave] 假別餘額：\n");
+  for (const e of list) {
+    const name = e.leaveName ?? e.leaveCode ?? "?";
+    const bal = e.leaveBalance ?? "?"; // 剩餘
+    const used = e.leaveTaken ?? "?"; // 已用
+    const total = e.totalEntitlement ?? "?"; // 可用
+    const unit = e.displayUnit === 1 ? "小時" : "天";
+    const period = e.periodBegin && e.periodEnd ? `（${e.periodBegin}~${e.periodEnd}）` : "";
+    console.log(`${name}：剩餘 ${bal} / 已用 ${used} / 可用 ${total} ${unit}${period}`);
+  }
+  if (process.env.DEBUG) {
+    console.log("\n[DEBUG] 原始 EmpLeaveInfo:\n", JSON.stringify(list, null, 2));
+  }
+}
+
 // ─── 子指令：打卡（原本的流程）───────────────────────────────
 async function runClock(inOutArg?: string): Promise<void> {
   const companyCode = requireEnv("COMPANY_CODE");
@@ -838,6 +875,7 @@ async function main(): Promise<void> {
   if (sub === "forminfo") return runFormInfo();
   if (sub === "apply-ot") return runApplyOt();
   if (sub === "status") return runStatus();
+  if (sub === "leave") return runLeave();
   return runClock(sub); // sub 為 in|out|undefined
 }
 
