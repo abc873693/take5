@@ -92,7 +92,7 @@ App 沒有獨立「補打卡」endpoint。**補打卡實際上是用 `WorkflowFo
 |---|---|---|
 | POST | `/api/WorkflowForm/Apply` | 提交申請（補打卡、加班、請假、調班…） |
 | GET | `/api/WorkflowForm/GetApplicationTypes` | **可申請的表單清單（formcode 權威來源）** |
-| GET | `/api/WorkflowForm/GetFormInfo` | 取單一表單詳情 |
+| GET | `/api/WorkflowForm/GetFormInfo` | 取單一表單詳情；帶**完整清單 item**（含 `forminstanceid`/`workflowinstanceid`/`action`/`submittype` 等）時 `listFormData` 會回**已填寫內容** |
 | GET | `/api/WorkflowForm/GetAllRefLookup` | 表單參考資料（下拉選單來源） |
 | POST | `/api/WorkflowForm/Approve` | 核准 |
 | POST | `/api/WorkflowForm/Refuse` | 退回 |

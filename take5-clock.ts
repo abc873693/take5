@@ -695,7 +695,37 @@ function asArray(x: unknown): Array<Record<string, unknown>> {
   return Array.isArray(x) ? (x as Array<Record<string, unknown>>) : [];
 }
 
-async function printApplicationStatus(client: Take5Client, filterFormcode?: string): Promise<void> {
+// 帶完整清單 item 打 GetFormInfo，listFormData 會回填寫內容；用 fields 的中文 label 印出
+async function printApplicationDetail(client: Take5Client, item: Record<string, unknown>): Promise<void> {
+  let info: { fields?: Array<Record<string, unknown>>; listFormData?: Array<Record<string, unknown>> };
+  try {
+    info = (await client.getFormInfo(item)) as typeof info;
+  } catch (e) {
+    console.log(`    （無法取明細：${e instanceof Error ? e.message : String(e)}）`);
+    return;
+  }
+  const rows = info.listFormData ?? [];
+  if (rows.length === 0) {
+    console.log("    （無明細資料）");
+    return;
+  }
+  for (const row of rows) {
+    // 依 fields 順序、只印非隱藏且有值的欄位，用中文 fieldName
+    for (const f of info.fields ?? []) {
+      if (f.hide) continue;
+      const col = f.columnName as string;
+      const v = row[col];
+      if (v === null || v === undefined || v === "") continue;
+      console.log(`    ${f.fieldName ?? col}: ${v}`);
+    }
+  }
+}
+
+async function printApplicationStatus(
+  client: Take5Client,
+  filterFormcode?: string,
+  detail = false,
+): Promise<void> {
   const [pending, closed] = await Promise.all([
     client.getWorkflowList("/api/WorkflowForm/GetMyPendingApplicationsList"),
     client.getWorkflowList("/api/WorkflowForm/GetMyClosedApplicationsList"),
@@ -714,17 +744,20 @@ async function printApplicationStatus(client: Take5Client, filterFormcode?: stri
   for (const r of rows) {
     console.log(
       `#${r.forminstanceid}  ${r.typename}  [${r.bucket}/${r.workflowstatus ?? "?"}]` +
+        `  簽核 ${r.workflowcode ?? "-"}` +
         `  送出 ${r.submittime ?? "-"}` +
         `${r.endtime ? `  結案 ${r.endtime}` : ""}`,
     );
+    if (detail) await printApplicationDetail(client, r);
   }
 }
 
 async function runStatus(): Promise<void> {
+  const detail = process.argv.includes("--detail");
   const filter = process.argv.slice(3).filter((a) => !a.startsWith("--"))[0];
   const client = await connect();
   console.log(filter ? `[status] 申請單狀態（formcode=${filter}）` : "[status] 我的申請單狀態");
-  await printApplicationStatus(client, filter);
+  await printApplicationStatus(client, filter, detail);
 }
 
 // ─── 子指令：假別額度/餘額（GET /api/LeaveCalc）──────────────
