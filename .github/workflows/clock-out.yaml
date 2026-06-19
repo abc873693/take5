@@ -2,8 +2,8 @@ name: Auto Clock-Out 6:30PM (script gates workdays)
 
 on:
   schedule:
-    # 每天下午六點半 (UTC+8 = 10:30 UTC)；是否真的打卡由 take5-clock.ts 依班表/加班/請假判斷
-    - cron: '30 10 * * *'
+    # 目標 17:30 TPE (09:30 UTC)；GitHub 排程實測延遲約 +80 分 → 實際落在 ~18:30-19:00（最早不早於 18:00）。是否真的打卡由 take5-clock.ts 判斷
+    - cron: '30 9 * * *'
   workflow_dispatch:
 
 jobs:

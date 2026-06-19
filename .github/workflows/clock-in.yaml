@@ -2,8 +2,8 @@ name: Auto Clock-In 9AM (script gates workdays)
 
 on:
   schedule:
-    # 每天早上九點 (UTC+8 = 01:00 UTC)；是否真的打卡由 take5-clock.ts 依班表/加班/請假判斷
-    - cron: '0 1 * * *'
+    # 目標 08:00 TPE (00:00 UTC)；GitHub 排程實測延遲約 +50 分 → 實際落在 ~09:00。是否真的打卡由 take5-clock.ts 判斷
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
