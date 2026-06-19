@@ -412,7 +412,11 @@ App 端在 `FcmService.initPush()`（`main.js:5912`）呼叫 `Capacitor Device.g
 > `weekendday`（如 `RO`）/`holiday`/`phday` ＝ 休息日或假日；`leave_code` 有值 ＝ 請假。
 > 都沒有（空班別、無標記）視為非排定上班日。`/api/ATS/BeforeClockInOut` 在無打卡需求時可能回 `{}`，不可靠，故以 RosterList 為準。
 >
-> ⚠️ **休息日/假日若有核准（或審核中）的加班，仍需打卡**。RosterList 不反映加班，需另查加班申請的 `otdate`（GetFormInfo 的 `listFormData`，退回的不算）。`take5-clock.ts workday` 與打卡前檢查都已綜合「班表上班日 **或** 該日有加班申請」來判定。
+> ⚠️ **休息日/假日若有核准（或審核中）的加班，仍需打卡**。RosterList 不反映加班，需另查加班申請的 `otdate`（GetFormInfo 的 `listFormData`，退回的不算）。
+>
+> ⚠️ **半天請假**：請假申請的 `listFormData` 含 `empleavedata_leavedays`（`0.5`=半天 / `1`=全天）與 `leavefromtime`/`leavetotime`（請假時段，如 `14:00-18:00`）。半天假當天仍要打卡，只是落在請假時段的那張卡（上班看工時起、下班看工時迄）要跳過。
+>
+> `take5-clock.ts workday` 與打卡前檢查已綜合「班表上班日 **或** 加班日；扣除全天/多日請假；半天請假只跳過請假那半的卡」來判定（依 in/out 分別判斷）。
 
 ---
 

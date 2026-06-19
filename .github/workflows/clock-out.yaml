@@ -1,9 +1,9 @@
-name: Auto Clock-Out Weekdays 6:30PM
+name: Auto Clock-Out 6:30PM (script gates workdays)
 
 on:
   schedule:
-    # 平日下午六點半 (UTC+8 = 10:30 UTC)
-    - cron: '30 10 * * 1-5'
+    # 每天下午六點半 (UTC+8 = 10:30 UTC)；是否真的打卡由 take5-clock.ts 依班表/加班/請假判斷
+    - cron: '30 10 * * *'
   workflow_dispatch:
 
 jobs:

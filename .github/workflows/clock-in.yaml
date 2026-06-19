@@ -1,9 +1,9 @@
-name: Auto Clock-In Weekdays 9AM
+name: Auto Clock-In 9AM (script gates workdays)
 
 on:
   schedule:
-    # 平日早上九點 (UTC+8 = 01:00 UTC)
-    - cron: '0 1 * * 1-5'
+    # 每天早上九點 (UTC+8 = 01:00 UTC)；是否真的打卡由 take5-clock.ts 依班表/加班/請假判斷
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:

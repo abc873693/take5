@@ -827,41 +827,147 @@ async function getOvertimeDates(client: Take5Client): Promise<Map<string, string
   return map;
 }
 
-// 綜合判定某日是否需打卡：班表上班日，或該日有加班申請。
-function clockDecision(
-  roster: RosterEntry[] | undefined,
-  otDates: Map<string, string>,
-  date: string,
-): { clock: boolean; reason: string } {
-  const wd = classifyWorkday(roster, date);
-  if (wd.workday) return { clock: true, reason: wd.reason };
-  const ot = otDates.get(date);
-  if (ot) return { clock: true, reason: `加班日（${ot}）` };
-  return { clock: false, reason: wd.reason };
+const LEAVE_FORMCODE = "cf_wf_LeaveApp";
+const LEAVE_TABLE = "empleavedata";
+
+interface LeaveDay {
+  days: number; // 0.5=半天, >=1=全天
+  from: string; // "HH:mm" 請假起
+  to: string; // "HH:mm" 請假迄
+  full: boolean; // 全天/多日
 }
 
-// ─── 子指令：查今天是不是上班日 ───────────────────────────────
+// "9999/12/31 14:00:00" → "14:00"
+function hhmm(s: unknown): string {
+  if (!s) return "";
+  const parts = String(s).trim().split(/\s+/);
+  return (parts[parts.length - 1] || "").slice(0, 5);
+}
+// from <= t <= to（HH:mm 字串可直接比較）
+function inWindow(t: string, from: string, to: string): boolean {
+  return !!from && !!to && from <= t && t <= to;
+}
+// 列舉 yyyy/MM/dd 區間（含頭尾）
+function dateRange(from: string, to: string): string[] {
+  const out: string[] = [];
+  const d = new Date(from.replace(/\//g, "-"));
+  const end = new Date((to || from).replace(/\//g, "-"));
+  if (isNaN(d.getTime()) || isNaN(end.getTime())) return [from];
+  while (d <= end) {
+    out.push(todayStr(d));
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+// 取「有請假的日期」→ 該日請假資訊（退回/拒絕不算；含 pending）。
+async function getLeaveDates(client: Take5Client): Promise<Map<string, LeaveDay>> {
+  const [pending, closed] = await Promise.all([
+    client.getWorkflowList("/api/WorkflowForm/GetMyPendingApplicationsList"),
+    client.getWorkflowList("/api/WorkflowForm/GetMyClosedApplicationsList"),
+  ]);
+  const items = [...asArray(pending), ...asArray(closed)].filter((i) => i.formcode === LEAVE_FORMCODE);
+  const map = new Map<string, LeaveDay>();
+  for (const it of items) {
+    if (/退|拒|駁/.test(String(it.workflowstatus ?? ""))) continue;
+    try {
+      const info = (await client.getFormInfo(it)) as { listFormData?: Array<Record<string, unknown>> };
+      for (const row of info.listFormData ?? []) {
+        const from = String(row[`${LEAVE_TABLE}_specifyfromdate`] ?? "");
+        const to = String(row[`${LEAVE_TABLE}_specifytodate`] ?? "");
+        if (!from) continue;
+        const days = Number(row[`${LEAVE_TABLE}_leavedays`] ?? 1);
+        const multiDay = !!to && to !== from;
+        const ld: LeaveDay = {
+          days,
+          from: hhmm(row[`${LEAVE_TABLE}_leavefromtime`]),
+          to: hhmm(row[`${LEAVE_TABLE}_leavetotime`]),
+          full: multiDay || days >= 1,
+        };
+        for (const d of dateRange(from, to)) map.set(d, ld);
+      }
+    } catch {
+      /* 個別失敗略過 */
+    }
+  }
+  return map;
+}
+
+// 綜合判定某日某段（inOut）是否需打卡：班表上班日/加班日 → 需打卡；
+// 全天(或多日)請假 → 免打卡；半天請假 → 落在請假時段的那張卡跳過、另一張照打。
+function shouldClock(
+  roster: RosterEntry[] | undefined,
+  otDates: Map<string, string>,
+  leaveDates: Map<string, LeaveDay>,
+  date: string,
+  inOut: boolean,
+): { clock: boolean; reason: string } {
+  const e = roster?.find((r) => r.workdate === date);
+  const workStart = e?.workstarthour || "09:00";
+  const workEnd = e?.workendhour || "18:00";
+  const isRosterWork = !!(e && (e.roster_name || e.workstarthour));
+  const ot = otDates.get(date);
+  const lv = leaveDates.get(date);
+
+  if (lv && lv.full && !ot) {
+    return { clock: false, reason: "全天請假" };
+  }
+  const clockDay = isRosterWork || !!ot || (lv && !lv.full);
+  if (!clockDay) {
+    return { clock: false, reason: classifyWorkday(roster, date).reason };
+  }
+  if (lv && !lv.full) {
+    const ref = inOut ? workStart : workEnd; // 上班看工時起、下班看工時迄
+    const side = inOut ? "上班" : "下班";
+    if (inWindow(ref, lv.from, lv.to)) {
+      return { clock: false, reason: `半天請假（${lv.from}-${lv.to}），${side}卡免打` };
+    }
+    return { clock: true, reason: `半天請假（${lv.from}-${lv.to}），${side}卡照打` };
+  }
+  if (ot && !isRosterWork) return { clock: true, reason: `加班日（${ot}）` };
+  return { clock: true, reason: classifyWorkday(roster, date).reason };
+}
+
+// ─── 子指令：查今天要不要打卡 ─────────────────────────────────
 // workday          只看今天
-// workday --list   列出班表內各天（含加班日）
+// workday --list   列出班表內各天（含加班/半天假）
 async function runWorkday(): Promise<void> {
   const client = await connect();
-  const [emp, otDates] = await Promise.all([client.getEmployee(0), getOvertimeDatesSafe(client)]);
+  const [emp, otDates, leaveDates] = await Promise.all([
+    client.getEmployee(0),
+    getOvertimeDatesSafe(client),
+    getLeaveDatesSafe(client),
+  ]);
+  const fmt = (date: string) => {
+    const i = shouldClock(emp.RosterList, otDates, leaveDates, date, true);
+    const o = shouldClock(emp.RosterList, otDates, leaveDates, date, false);
+    const need = i.clock || o.clock;
+    const reason = i.reason === o.reason ? i.reason : `${i.reason}；${o.reason}`;
+    return { need, flags: `上${i.clock ? "✓" : "✗"} 下${o.clock ? "✓" : "✗"}`, reason };
+  };
   const today = todayStr();
-  const d = clockDecision(emp.RosterList, otDates, today);
-  console.log(`[workday] ${today}：${d.clock ? "需打卡 ✓" : "免打卡 ✗"} — ${d.reason}`);
+  const t = fmt(today);
+  console.log(`[workday] ${today}：${t.need ? "需打卡 ✓" : "免打卡 ✗"}（${t.flags}）— ${t.reason}`);
   if (process.argv.includes("--list")) {
     console.log("\n班表：");
     for (const r of emp.RosterList ?? []) {
-      const c = clockDecision(emp.RosterList, otDates, r.workdate);
-      console.log(`  ${r.workdate}  ${c.clock ? "打卡" : "休  "}  ${c.reason}`);
+      const f = fmt(r.workdate);
+      console.log(`  ${r.workdate}  ${f.need ? "打卡" : "休  "} ${f.flags}  ${f.reason}`);
     }
   }
 }
 
-// getOvertimeDates 包一層，失敗時回空 Map（查班表不該因 OT 查詢失敗而中斷）
+// 包一層，失敗時回空 Map（查班表不該因 OT/請假查詢失敗而中斷）
 async function getOvertimeDatesSafe(client: Take5Client): Promise<Map<string, string>> {
   try {
     return await getOvertimeDates(client);
+  } catch {
+    return new Map();
+  }
+}
+async function getLeaveDatesSafe(client: Take5Client): Promise<Map<string, LeaveDay>> {
+  try {
+    return await getLeaveDates(client);
   } catch {
     return new Map();
   }
@@ -942,19 +1048,23 @@ async function runClock(inOutArg?: string): Promise<void> {
     );
   }
 
-  // 上班日檢查：班表上班日「或」該日有加班申請才打卡；否則（週末/假日/請假/未排班且無加班）跳過。
+  // 打卡前檢查（依 inOut 分別判斷）：班表上班日/加班日要打卡；全天請假跳過；
+  // 半天請假時，落在請假時段的那張卡（上班或下班）跳過、另一張照打。
   // exit 0 給 cron 用不報錯。加 --force 或 CLOCK_FORCE=1 可無視強制打卡。
   const force = process.argv.includes("--force") || process.env.CLOCK_FORCE === "1";
   const today = todayStr();
-  const otDates = await getOvertimeDatesSafe(client);
-  const decision = clockDecision(emp.RosterList, otDates, today);
-  console.log(`      班表檢查   = ${today} → ${decision.reason}`);
+  const [otDates, leaveDates] = await Promise.all([
+    getOvertimeDatesSafe(client),
+    getLeaveDatesSafe(client),
+  ]);
+  const decision = shouldClock(emp.RosterList, otDates, leaveDates, today, inOut);
+  console.log(`      班表檢查   = ${today} ${inOut ? "上班" : "下班"} → ${decision.reason}`);
   if (!decision.clock && !force) {
-    console.log(`✓ 今天免打卡（${decision.reason}），跳過。要強制打卡加 --force。`);
+    console.log(`✓ 今天此段免打卡（${decision.reason}），跳過。要強制打卡加 --force。`);
     return;
   }
   if (!decision.clock && force) {
-    console.log(`[warn] 今天免打卡（${decision.reason}），但 --force 仍強制打卡。`);
+    console.log(`[warn] 今天此段免打卡（${decision.reason}），但 --force 仍強制打卡。`);
   }
 
   if (!emp.MachineGroup) {
