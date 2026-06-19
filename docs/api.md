@@ -394,12 +394,23 @@ App 端在 `FcmService.initPush()`（`main.js:5912`）呼叫 `Capacitor Device.g
   },
   "MobileCanOffsiteClock": true,
   "Position": { "positioncode": "...", "positionname": "..." },
-  "RosterList": [{ "workdate": "..." }],
+  "RosterList": [{
+    "workdate": "2026/06/22",      // yyyy/MM/dd
+    "weekendday": "",              // "RO"=休息日（六），空=非標記
+    "holiday": "", "phday": "",    // 國定假日 code
+    "leave_code": "", "leave_name": "", // 該日請假
+    "roster_name": "09:00-18:00",  // 班別名；有值＝該日有排班
+    "workstarthour": "09:00", "workendhour": "18:00"
+  }],
   "Subordinates": [],
   "EmployeeUpdates": [],
   "Bulletins": []
 }
 ```
+
+> **判斷上班日**：用 `RosterList` 找今天那筆——有 `roster_name`/`workstarthour` ＝ 上班日；
+> `weekendday`（如 `RO`）/`holiday`/`phday` ＝ 休息日或假日；`leave_code` 有值 ＝ 請假。
+> 都沒有（空班別、無標記）視為非排定上班日。`/api/ATS/BeforeClockInOut` 在無打卡需求時可能回 `{}`，不可靠，故以 RosterList 為準。`take5-clock.ts workday` 即用此邏輯，打卡前也會自動檢查、非上班日跳過。
 
 ---
 

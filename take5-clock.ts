@@ -103,10 +103,25 @@ interface ApiEmpInfo {
   [k: string]: unknown;
 }
 
+// /api/Employee 的 RosterList（班表），一天一筆
+interface RosterEntry {
+  workdate: string; // "yyyy/MM/dd"
+  weekendday?: string; // "RO"=休息日；空=非標記
+  holiday?: string; // 國定假日 code
+  phday?: string; // public holiday
+  leave_code?: string;
+  leave_name?: string;
+  roster_name?: string; // 班別名，如 "09:00-18:00"；有值代表該日有排班
+  workstarthour?: string;
+  workendhour?: string;
+  [k: string]: unknown;
+}
+
 interface EmployeeResponse {
   EmpInfo: ApiEmpInfo;
   MachineGroup?: ApiMachineGroup;
   MobileCanOffsiteClock?: boolean;
+  RosterList?: RosterEntry[];
   [k: string]: unknown;
 }
 
@@ -447,6 +462,33 @@ function haversineMeters(
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+// 今天的本地日期，格式 yyyy/MM/dd（對齊 RosterList.workdate）
+function todayStr(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`;
+}
+
+// 依 RosterList 判定某日是否為上班日。
+// 規則：有班別（roster_name/workstarthour）= 上班日；否則依標記給原因（休息日/假日/請假/未排班）。
+function classifyWorkday(
+  roster: RosterEntry[] | undefined,
+  date: string,
+): { workday: boolean; reason: string; shift?: string } {
+  const e = roster?.find((r) => r.workdate === date);
+  if (!e) return { workday: false, reason: "今天不在班表內（無排班資料）" };
+  const hasShift = !!(e.workstarthour || e.roster_name);
+  if (e.leave_code) {
+    return { workday: false, reason: `請假：${e.leave_name || e.leave_code}` };
+  }
+  if (hasShift) {
+    const shift = e.roster_name || `${e.workstarthour}-${e.workendhour}`;
+    return { workday: true, reason: `上班日（${shift}）`, shift };
+  }
+  if (e.weekendday) return { workday: false, reason: `休息日（${e.weekendday}）` };
+  if (e.holiday || e.phday) return { workday: false, reason: `國定假日` };
+  return { workday: false, reason: "非排定上班日（無班別）" };
+}
+
 // 加班時數：對應 App dynamic.component otDiff()（:6871）。回傳小時數（2 位小數字串）。
 // fromtime/totime 為 "yyyy/MM/dd HH:mm:ss"（new Date 可解析）；nextday* 為 true 時各 +1 天。
 function otDiff(
@@ -760,6 +802,24 @@ async function runStatus(): Promise<void> {
   await printApplicationStatus(client, filter, detail);
 }
 
+// ─── 子指令：查今天是不是上班日 ───────────────────────────────
+// workday          只看今天
+// workday --list   列出班表內未來幾天
+async function runWorkday(): Promise<void> {
+  const client = await connect();
+  const emp = await client.getEmployee(0);
+  const today = todayStr();
+  const wd = classifyWorkday(emp.RosterList, today);
+  console.log(`[workday] ${today}：${wd.workday ? "上班日 ✓" : "非上班日 ✗"} — ${wd.reason}`);
+  if (process.argv.includes("--list")) {
+    console.log("\n班表：");
+    for (const r of emp.RosterList ?? []) {
+      const c = classifyWorkday(emp.RosterList, r.workdate);
+      console.log(`  ${r.workdate}  ${c.workday ? "上班" : "休"}  ${c.reason}`);
+    }
+  }
+}
+
 // ─── 子指令：假別額度/餘額（GET /api/LeaveCalc）──────────────
 async function runLeave(): Promise<void> {
   const client = await connect();
@@ -834,6 +894,21 @@ async function runClock(inOutArg?: string): Promise<void> {
       ),
     );
   }
+
+  // 上班日檢查：非上班日（週末/假日/請假/未排班）預設跳過打卡，給 cron 用不報錯。
+  // 加 --force 或 CLOCK_FORCE=1 可無視班表強制打卡。
+  const force = process.argv.includes("--force") || process.env.CLOCK_FORCE === "1";
+  const today = todayStr();
+  const wd = classifyWorkday(emp.RosterList, today);
+  console.log(`      班表檢查   = ${today} → ${wd.reason}`);
+  if (!wd.workday && !force) {
+    console.log(`✓ 今天非上班日（${wd.reason}），跳過打卡。要強制打卡加 --force。`);
+    return;
+  }
+  if (!wd.workday && force) {
+    console.log(`[warn] 今天非上班日（${wd.reason}），但 --force 仍強制打卡。`);
+  }
+
   if (!emp.MachineGroup) {
     throw new Error("該員工沒有 MachineGroup（後端未指派打卡機群組）");
   }
@@ -900,6 +975,8 @@ async function runClock(inOutArg?: string): Promise<void> {
 //   npx tsx take5-clock.ts forminfo <code>  → dump 表單欄位 schema
 //   npx tsx take5-clock.ts apply-ot ...     → 加班申請（預設 dry-run，--send 才送並查狀態）
 //   npx tsx take5-clock.ts status [formcode]→ 查我的申請單狀態（審核中 + 已結案）
+//   npx tsx take5-clock.ts workday [--list] → 查今天是不是上班日（班表）
+//   打卡預設會先檢查班表，非上班日自動跳過；加 --force 強制打卡
 async function main(): Promise<void> {
   loadEnv();
   const sub = process.argv[2];
@@ -909,6 +986,7 @@ async function main(): Promise<void> {
   if (sub === "apply-ot") return runApplyOt();
   if (sub === "status") return runStatus();
   if (sub === "leave") return runLeave();
+  if (sub === "workday") return runWorkday();
   return runClock(sub); // sub 為 in|out|undefined
 }
 
