@@ -11,15 +11,15 @@ cp .env.example .env
 $EDITOR .env             # 填 COMPANY_CODE / EMAIL / PASSWORD / LATITUDE / LONGITUDE
 
 # 2. 跑（需要 Node 18+）
-npx tsx take5-clock.ts            # 走 .env，預設下班打卡（非上班日自動跳過）
+npx tsx take5-clock.ts            # 走 .env，預設下班打卡（免打卡日自動跳過）
 npx tsx take5-clock.ts in         # 上班
 npx tsx take5-clock.ts out        # 下班
 npx tsx take5-clock.ts in --force # 無視班表強制打卡（或 CLOCK_FORCE=1）
 DEBUG=1 npx tsx take5-clock.ts    # 印詳細 debug 訊息
 
-# 查今天是不是上班日（依 RosterList 班表）
+# 查今天要不要打卡（班表上班日 或 該日有加班申請）
 npx tsx take5-clock.ts workday          # 只看今天
-npx tsx take5-clock.ts workday --list   # 列出班表內各天
+npx tsx take5-clock.ts workday --list   # 列出班表內各天（含加班日）
 
 # 探測請假 / 加班等簽核表單（WorkflowForm 動態表單）
 npx tsx take5-clock.ts applytypes                # 列可申請表單，找 formcode（首選）

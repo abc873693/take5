@@ -410,7 +410,9 @@ App 端在 `FcmService.initPush()`（`main.js:5912`）呼叫 `Capacitor Device.g
 
 > **判斷上班日**：用 `RosterList` 找今天那筆——有 `roster_name`/`workstarthour` ＝ 上班日；
 > `weekendday`（如 `RO`）/`holiday`/`phday` ＝ 休息日或假日；`leave_code` 有值 ＝ 請假。
-> 都沒有（空班別、無標記）視為非排定上班日。`/api/ATS/BeforeClockInOut` 在無打卡需求時可能回 `{}`，不可靠，故以 RosterList 為準。`take5-clock.ts workday` 即用此邏輯，打卡前也會自動檢查、非上班日跳過。
+> 都沒有（空班別、無標記）視為非排定上班日。`/api/ATS/BeforeClockInOut` 在無打卡需求時可能回 `{}`，不可靠，故以 RosterList 為準。
+>
+> ⚠️ **休息日/假日若有核准（或審核中）的加班，仍需打卡**。RosterList 不反映加班，需另查加班申請的 `otdate`（GetFormInfo 的 `listFormData`，退回的不算）。`take5-clock.ts workday` 與打卡前檢查都已綜合「班表上班日 **或** 該日有加班申請」來判定。
 
 ---
 

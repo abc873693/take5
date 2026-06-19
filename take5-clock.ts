@@ -802,21 +802,68 @@ async function runStatus(): Promise<void> {
   await printApplicationStatus(client, filter, detail);
 }
 
+// 取「有加班申請的日期」→ 該日狀態（同意/審核中…），退回/拒絕的不算。
+// otdate 只在 GetFormInfo 的 listFormData 裡，所以逐筆 OT 申請打 detail。
+async function getOvertimeDates(client: Take5Client): Promise<Map<string, string>> {
+  const [pending, closed] = await Promise.all([
+    client.getWorkflowList("/api/WorkflowForm/GetMyPendingApplicationsList"),
+    client.getWorkflowList("/api/WorkflowForm/GetMyClosedApplicationsList"),
+  ]);
+  const items = [...asArray(pending), ...asArray(closed)].filter((i) => i.formcode === OT_FORMCODE);
+  const map = new Map<string, string>();
+  for (const it of items) {
+    const status = String(it.workflowstatus ?? "");
+    if (/退|拒|駁/.test(status)) continue; // 退回/拒絕不算需打卡
+    try {
+      const info = (await client.getFormInfo(it)) as { listFormData?: Array<Record<string, unknown>> };
+      for (const row of info.listFormData ?? []) {
+        const d = row[`${OT_TABLE}_otdate`];
+        if (d) map.set(String(d), status);
+      }
+    } catch {
+      /* 個別失敗略過 */
+    }
+  }
+  return map;
+}
+
+// 綜合判定某日是否需打卡：班表上班日，或該日有加班申請。
+function clockDecision(
+  roster: RosterEntry[] | undefined,
+  otDates: Map<string, string>,
+  date: string,
+): { clock: boolean; reason: string } {
+  const wd = classifyWorkday(roster, date);
+  if (wd.workday) return { clock: true, reason: wd.reason };
+  const ot = otDates.get(date);
+  if (ot) return { clock: true, reason: `加班日（${ot}）` };
+  return { clock: false, reason: wd.reason };
+}
+
 // ─── 子指令：查今天是不是上班日 ───────────────────────────────
 // workday          只看今天
-// workday --list   列出班表內未來幾天
+// workday --list   列出班表內各天（含加班日）
 async function runWorkday(): Promise<void> {
   const client = await connect();
-  const emp = await client.getEmployee(0);
+  const [emp, otDates] = await Promise.all([client.getEmployee(0), getOvertimeDatesSafe(client)]);
   const today = todayStr();
-  const wd = classifyWorkday(emp.RosterList, today);
-  console.log(`[workday] ${today}：${wd.workday ? "上班日 ✓" : "非上班日 ✗"} — ${wd.reason}`);
+  const d = clockDecision(emp.RosterList, otDates, today);
+  console.log(`[workday] ${today}：${d.clock ? "需打卡 ✓" : "免打卡 ✗"} — ${d.reason}`);
   if (process.argv.includes("--list")) {
     console.log("\n班表：");
     for (const r of emp.RosterList ?? []) {
-      const c = classifyWorkday(emp.RosterList, r.workdate);
-      console.log(`  ${r.workdate}  ${c.workday ? "上班" : "休"}  ${c.reason}`);
+      const c = clockDecision(emp.RosterList, otDates, r.workdate);
+      console.log(`  ${r.workdate}  ${c.clock ? "打卡" : "休  "}  ${c.reason}`);
     }
+  }
+}
+
+// getOvertimeDates 包一層，失敗時回空 Map（查班表不該因 OT 查詢失敗而中斷）
+async function getOvertimeDatesSafe(client: Take5Client): Promise<Map<string, string>> {
+  try {
+    return await getOvertimeDates(client);
+  } catch {
+    return new Map();
   }
 }
 
@@ -895,18 +942,19 @@ async function runClock(inOutArg?: string): Promise<void> {
     );
   }
 
-  // 上班日檢查：非上班日（週末/假日/請假/未排班）預設跳過打卡，給 cron 用不報錯。
-  // 加 --force 或 CLOCK_FORCE=1 可無視班表強制打卡。
+  // 上班日檢查：班表上班日「或」該日有加班申請才打卡；否則（週末/假日/請假/未排班且無加班）跳過。
+  // exit 0 給 cron 用不報錯。加 --force 或 CLOCK_FORCE=1 可無視強制打卡。
   const force = process.argv.includes("--force") || process.env.CLOCK_FORCE === "1";
   const today = todayStr();
-  const wd = classifyWorkday(emp.RosterList, today);
-  console.log(`      班表檢查   = ${today} → ${wd.reason}`);
-  if (!wd.workday && !force) {
-    console.log(`✓ 今天非上班日（${wd.reason}），跳過打卡。要強制打卡加 --force。`);
+  const otDates = await getOvertimeDatesSafe(client);
+  const decision = clockDecision(emp.RosterList, otDates, today);
+  console.log(`      班表檢查   = ${today} → ${decision.reason}`);
+  if (!decision.clock && !force) {
+    console.log(`✓ 今天免打卡（${decision.reason}），跳過。要強制打卡加 --force。`);
     return;
   }
-  if (!wd.workday && force) {
-    console.log(`[warn] 今天非上班日（${wd.reason}），但 --force 仍強制打卡。`);
+  if (!decision.clock && force) {
+    console.log(`[warn] 今天免打卡（${decision.reason}），但 --force 仍強制打卡。`);
   }
 
   if (!emp.MachineGroup) {
