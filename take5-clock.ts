@@ -998,13 +998,71 @@ async function runLeave(): Promise<void> {
   }
 }
 
+// 實際送出打卡（挑 machine、算距離、POST clockInOut）。runClock / runHalfday 共用。
+async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: boolean): Promise<void> {
+  const lat = requireEnv("LATITUDE");
+  const lng = requireEnv("LONGITUDE");
+  if (!emp.MachineGroup) {
+    throw new Error("該員工沒有 MachineGroup（後端未指派打卡機群組）");
+  }
+  const machineList = emp.MachineGroup.machineList ?? [];
+  if (machineList.length === 0) {
+    throw new Error(
+      `MachineGroup.machineList 為空（code=${emp.MachineGroup.code}）。可能此公司啟用的是 Wi-Fi/藍牙模式，或員工尚未指派打卡點`,
+    );
+  }
+  // 過濾掉只能用 wifi/bluetooth 的機器，挑第一台支援 GPS 的
+  const machine = machineList.find((m) => !m.wifiOnly && !m.bluetoothOnly) ?? machineList[0];
+  const machineRadius = machine.range ?? emp.MachineGroup.range;
+  const machineLat =
+    typeof machine.latitude === "string" ? parseFloat(machine.latitude) : machine.latitude;
+  const machineLng =
+    typeof machine.longitude === "string" ? parseFloat(machine.longitude) : machine.longitude;
+  console.log(
+    "      empid       =", emp.EmpInfo.empid,
+    "\n      machineCode =", machine.machineCode,
+    machine.machineName ? `(${machine.machineName})` : "",
+    "\n      groupCode   =", emp.MachineGroup.code,
+    "\n      machineLoc  =", machineLat, ",", machineLng, `(radius=${machineRadius}m)`,
+  );
+
+  const useMachineLoc = process.env.USE_MACHINE_LOCATION === "1";
+  const sendLat = useMachineLoc && machineLat !== undefined ? machineLat : parseFloat(lat);
+  const sendLng = useMachineLoc && machineLng !== undefined ? machineLng : parseFloat(lng);
+
+  if (machineLat !== undefined && machineLng !== undefined) {
+    const distance = haversineMeters(sendLat, sendLng, machineLat, machineLng);
+    const inRange = machineRadius === undefined || distance <= machineRadius;
+    console.log(
+      `      距離       = ${distance.toFixed(1)}m`,
+      machineRadius !== undefined ? ` / radius ${machineRadius}m` : "",
+      inRange ? "✓ 在範圍內" : "✗ 超出範圍 — 後端可能標記為越界紀錄，不計入正規打卡",
+    );
+  }
+
+  console.log(
+    `[4/4] 送出打卡 (GPS) ${inOut ? "上班" : "下班"} — ${sendLat}, ${sendLng}`,
+    useMachineLoc ? "(USE_MACHINE_LOCATION=1)" : "",
+  );
+  const result = await client.clockInOut({
+    sourceType: "android",
+    InOut: inOut,
+    EmpId: emp.EmpInfo.empid,
+    Latitude: sendLat,
+    Longitude: sendLng,
+    MachineCode: machine.machineCode,
+    MachineGroupCode: emp.MachineGroup.code,
+    TimeZoneMinutesOffset: 0, // App 內部寫死 0，由後端處理時區
+    ValidType: ClockValidType.GPS,
+  });
+  console.log("✓ 打卡成功:", result.Time);
+}
+
 // ─── 子指令：打卡（原本的流程）───────────────────────────────
 async function runClock(inOutArg?: string): Promise<void> {
   const companyCode = requireEnv("COMPANY_CODE");
   const email = requireEnv("EMAIL");
   const password = requireEnv("PASSWORD");
-  const lat = requireEnv("LATITUDE");
-  const lng = requireEnv("LONGITUDE");
   const inOut = (inOutArg ?? process.env.IN_OUT) === "in"; // 'in' → true(上班), 其他 → false(下班/統一打卡)
 
   const client = new Take5Client();
@@ -1067,62 +1125,37 @@ async function runClock(inOutArg?: string): Promise<void> {
     console.log(`[warn] 今天此段免打卡（${decision.reason}），但 --force 仍強制打卡。`);
   }
 
-  if (!emp.MachineGroup) {
-    throw new Error("該員工沒有 MachineGroup（後端未指派打卡機群組）");
-  }
-  const machineList = emp.MachineGroup.machineList ?? [];
-  if (machineList.length === 0) {
-    throw new Error(
-      `MachineGroup.machineList 為空（code=${emp.MachineGroup.code}）。可能此公司啟用的是 Wi-Fi/藍牙模式，或員工尚未指派打卡點`,
-    );
-  }
-  // 過濾掉只能用 wifi/bluetooth 的機器，挑第一台支援 GPS 的
-  const machine = machineList.find((m) => !m.wifiOnly && !m.bluetoothOnly) ?? machineList[0];
-  // machine 自己有 range 就用，沒有就退到 machineGroup 的 range
-  const machineRadius = machine.range ?? emp.MachineGroup.range;
-  const machineLat =
-    typeof machine.latitude === "string" ? parseFloat(machine.latitude) : machine.latitude;
-  const machineLng =
-    typeof machine.longitude === "string" ? parseFloat(machine.longitude) : machine.longitude;
-  console.log(
-    "      empid       =", emp.EmpInfo.empid,
-    "\n      machineCode =", machine.machineCode,
-    machine.machineName ? `(${machine.machineName})` : "",
-    "\n      groupCode   =", emp.MachineGroup.code,
-    "\n      machineLoc  =", machineLat, ",", machineLng, `(radius=${machineRadius}m)`,
-  );
+  await performClock(client, emp, inOut);
+}
 
-  // USE_MACHINE_LOCATION=1 → 直接用 machine 座標（保證在 range 內）
-  const useMachineLoc = process.env.USE_MACHINE_LOCATION === "1";
-  const sendLat = useMachineLoc && machineLat !== undefined ? machineLat : parseFloat(lat);
-  const sendLng = useMachineLoc && machineLng !== undefined ? machineLng : parseFloat(lng);
-
-  if (machineLat !== undefined && machineLng !== undefined) {
-    const distance = haversineMeters(sendLat, sendLng, machineLat, machineLng);
-    const inRange = machineRadius === undefined || distance <= machineRadius;
-    console.log(
-      `      距離       = ${distance.toFixed(1)}m`,
-      machineRadius !== undefined ? ` / radius ${machineRadius}m` : "",
-      inRange ? "✓ 在範圍內" : "✗ 超出範圍 — 後端可能標記為越界紀錄，不計入正規打卡",
-    );
+// ─── 子指令：半天假交界打卡（14:00 cron 用）─────────────────────
+// 只在「今天有半天假」時動作：下午請假→打下班卡（你 14:00 離開）；上午請假→打上班卡（你 14:00 到）。
+// 其餘（無假/全天假/一般日）不動作，交給 09:00 / 18:30 的 in/out cron。
+async function runHalfday(): Promise<void> {
+  const client = await connect();
+  const emp = await client.getEmployee(0);
+  const today = todayStr();
+  const leaveDates = await getLeaveDatesSafe(client);
+  const lv = leaveDates.get(today);
+  if (!lv || lv.full) {
+    console.log(`✓ 今天無半天假（${lv ? "全天/多日請假" : "無請假"}），14:00 不動作。`);
+    return;
   }
-
-  console.log(
-    `[4/4] 送出打卡 (GPS) ${inOut ? "上班" : "下班"} — ${sendLat}, ${sendLng}`,
-    useMachineLoc ? "(USE_MACHINE_LOCATION=1)" : "",
-  );
-  const result = await client.clockInOut({
-    sourceType: "android",
-    InOut: inOut,
-    EmpId: emp.EmpInfo.empid,
-    Latitude: sendLat,
-    Longitude: sendLng,
-    MachineCode: machine.machineCode,
-    MachineGroupCode: emp.MachineGroup.code,
-    TimeZoneMinutesOffset: 0, // App 內部寫死 0，由後端處理時區
-    ValidType: ClockValidType.GPS,
-  });
-  console.log("✓ 打卡成功:", result.Time);
+  const e = emp.RosterList?.find((r) => r.workdate === today);
+  const workStart = e?.workstarthour || "09:00";
+  const workEnd = e?.workendhour || "18:00";
+  const morningOff = inWindow(workStart, lv.from, lv.to); // 請假覆蓋工時起 → 上午請假
+  const afternoonOff = inWindow(workEnd, lv.from, lv.to); // 請假覆蓋工時迄 → 下午請假
+  console.log(`[halfday] ${today} 半天請假 ${lv.from}-${lv.to}`);
+  if (afternoonOff && !morningOff) {
+    console.log("      下午請假 → 打下班卡（離開）");
+    await performClock(client, emp, false);
+  } else if (morningOff && !afternoonOff) {
+    console.log("      上午請假 → 打上班卡（到班）");
+    await performClock(client, emp, true);
+  } else {
+    console.log("      無法判斷上/下午（請假時段未覆蓋工時起或迄），14:00 不動作。");
+  }
 }
 
 // ─── main：依子指令分派 ───────────────────────────────────────
@@ -1134,6 +1167,7 @@ async function runClock(inOutArg?: string): Promise<void> {
 //   npx tsx take5-clock.ts apply-ot ...     → 加班申請（預設 dry-run，--send 才送並查狀態）
 //   npx tsx take5-clock.ts status [formcode]→ 查我的申請單狀態（審核中 + 已結案）
 //   npx tsx take5-clock.ts workday [--list] → 查今天是不是上班日（班表）
+//   npx tsx take5-clock.ts halfday          → 半天假交界打卡（14:00 cron 用）
 //   打卡預設會先檢查班表，非上班日自動跳過；加 --force 強制打卡
 async function main(): Promise<void> {
   loadEnv();
@@ -1145,6 +1179,7 @@ async function main(): Promise<void> {
   if (sub === "status") return runStatus();
   if (sub === "leave") return runLeave();
   if (sub === "workday") return runWorkday();
+  if (sub === "halfday") return runHalfday();
   return runClock(sub); // sub 為 in|out|undefined
 }
 

@@ -1,0 +1,29 @@
+name: Auto Clock Half-day Boundary 2PM (script gates)
+
+on:
+  schedule:
+    # 每天下午兩點 (UTC+8 = 06:00 UTC)；只在「今天有半天假」時打交界卡，否則不動作
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  clock-half:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Clock half-day boundary
+        env:
+          COMPANY_CODE: ${{ secrets.COMPANY_CODE }}
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          LATITUDE: ${{ secrets.LATITUDE }}
+          LONGITUDE: ${{ secrets.LONGITUDE }}
+          USE_MACHINE_LOCATION: '1'
+        run: npx -y tsx take5-clock.ts halfday
