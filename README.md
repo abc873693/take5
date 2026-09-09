@@ -14,6 +14,7 @@ $EDITOR .env             # 填 COMPANY_CODE / EMAIL / PASSWORD / LATITUDE / LONG
 npx tsx take5-clock.ts            # 走 .env，預設下班打卡（免打卡日自動跳過）
 npx tsx take5-clock.ts in         # 上班
 npx tsx take5-clock.ts out        # 下班
+npx tsx take5-clock.ts in --dry-run  # 只印 payload 不送出（檢查座標）
 npx tsx take5-clock.ts in --force # 無視班表強制打卡（或 CLOCK_FORCE=1）
 DEBUG=1 npx tsx take5-clock.ts    # 印詳細 debug 訊息
 
@@ -57,6 +58,7 @@ npx tsx take5-clock.ts leave
 | `DEVICE_ID` |  | App 端用的 FCM device id；留空不影響打卡 |
 | `USE_MACHINE_LOCATION` |  | `1` = 直接用 machine 後端設定的中心座標（保證在 range 內） |
 | `CLOCK_JITTER_METERS` |  | 每次打卡在基準座標周圍隨機飄移的半徑（公尺），預設 `20`；`0` = 關閉 |
+| `CLOCK_DRY_RUN` |  | `1` = 只印 payload 不送出（等同 `--dry-run`） |
 | `DEBUG` |  | `1` = 多印除錯訊息 |
 
 ## 流程
