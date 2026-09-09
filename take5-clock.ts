@@ -27,6 +27,10 @@ import { randomBytes } from "node:crypto";
 // ─── 常數 ─────────────────────────────────────────────────────
 const GROUP_BASE_URL = "https://take5people.net/T5PCompanyAPI";
 
+// 每次打卡在基準座標周圍隨機飄移的半徑（公尺）。手機定位本來就有誤差，
+// 送出固定到小數第六位的同一組座標反而不自然。用 CLOCK_JITTER_METERS 覆寫，0 = 關閉。
+const DEFAULT_JITTER_METERS = 20;
+
 // 對應 src/app/model/clockInOut/clockInOut.ts 的 enum clockValidType
 enum ClockValidType {
   None = 0,
@@ -443,6 +447,27 @@ function getOrGenerateDeviceId(): string {
     );
   }
   return generated;
+}
+
+/**
+ * 在半徑內隨機取一點，模擬手機 GPS 的定位飄移。
+ * 每次打卡送出的座標都不同，避免長期送出完全一致的定點值。
+ * radius 用 sqrt 取樣讓落點在圓內均勻分布，而非集中在圓心。
+ */
+function jitterCoords(
+  lat: number,
+  lng: number,
+  meters: number,
+): { lat: number; lng: number } {
+  if (!(meters > 0)) return { lat, lng };
+  const bearing = Math.random() * 2 * Math.PI;
+  const distance = meters * Math.sqrt(Math.random());
+  const dLat = (distance * Math.cos(bearing)) / 111320;
+  const dLng =
+    (distance * Math.sin(bearing)) /
+    (111320 * Math.cos((lat * Math.PI) / 180));
+  const round6 = (n: number) => Math.round(n * 1e6) / 1e6;
+  return { lat: round6(lat + dLat), lng: round6(lng + dLng) };
 }
 
 // Haversine — 兩點之間的地表距離（公尺），跟 App utils.getGPSDistance 同義
@@ -1027,8 +1052,20 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
   );
 
   const useMachineLoc = process.env.USE_MACHINE_LOCATION === "1";
-  const sendLat = useMachineLoc && machineLat !== undefined ? machineLat : parseFloat(lat);
-  const sendLng = useMachineLoc && machineLng !== undefined ? machineLng : parseFloat(lng);
+  const baseLat = useMachineLoc && machineLat !== undefined ? machineLat : parseFloat(lat);
+  const baseLng = useMachineLoc && machineLng !== undefined ? machineLng : parseFloat(lng);
+
+  const jitterMeters =
+    process.env.CLOCK_JITTER_METERS !== undefined
+      ? parseFloat(process.env.CLOCK_JITTER_METERS)
+      : DEFAULT_JITTER_METERS;
+  const { lat: sendLat, lng: sendLng } = jitterCoords(baseLat, baseLng, jitterMeters);
+  if (jitterMeters > 0) {
+    console.log(
+      `      GPS 飄移     = ±${jitterMeters}m → ${sendLat}, ${sendLng}`,
+      `(base ${baseLat}, ${baseLng}, 偏移 ${haversineMeters(baseLat, baseLng, sendLat, sendLng).toFixed(1)}m)`,
+    );
+  }
 
   if (machineLat !== undefined && machineLng !== undefined) {
     const distance = haversineMeters(sendLat, sendLng, machineLat, machineLng);

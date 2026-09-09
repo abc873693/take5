@@ -56,6 +56,7 @@ npx tsx take5-clock.ts leave
 | `DEVICE_TYPE` |  | 預設 `android` |
 | `DEVICE_ID` |  | App 端用的 FCM device id；留空不影響打卡 |
 | `USE_MACHINE_LOCATION` |  | `1` = 直接用 machine 後端設定的中心座標（保證在 range 內） |
+| `CLOCK_JITTER_METERS` |  | 每次打卡在基準座標周圍隨機飄移的半徑（公尺），預設 `20`；`0` = 關閉 |
 | `DEBUG` |  | `1` = 多印除錯訊息 |
 
 ## 流程
