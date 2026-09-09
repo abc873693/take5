@@ -25,5 +25,5 @@ jobs:
           PASSWORD: ${{ secrets.PASSWORD }}
           LATITUDE: ${{ secrets.LATITUDE }}
           LONGITUDE: ${{ secrets.LONGITUDE }}
-          USE_MACHINE_LOCATION: '1'
+          USE_MACHINE_LOCATION: '0'
         run: npx -y tsx take5-clock.ts in
