@@ -1081,7 +1081,7 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
     `[4/4] 送出打卡 (GPS) ${inOut ? "上班" : "下班"} — ${sendLat}, ${sendLng}`,
     useMachineLoc ? "(USE_MACHINE_LOCATION=1)" : "",
   );
-  const result = await client.clockInOut({
+  const payload: ClockInOutPayload = {
     sourceType: "android",
     InOut: inOut,
     EmpId: emp.EmpInfo.empid,
@@ -1091,7 +1091,12 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
     MachineGroupCode: emp.MachineGroup.code,
     TimeZoneMinutesOffset: 0, // App 內部寫死 0，由後端處理時區
     ValidType: ClockValidType.GPS,
-  });
+  };
+  if (process.argv.includes("--dry-run") || process.env.CLOCK_DRY_RUN === "1") {
+    console.log("✓ dry-run，未送出。payload =", JSON.stringify(payload, null, 2));
+    return;
+  }
+  const result = await client.clockInOut(payload);
   console.log("✓ 打卡成功:", result.Time);
 }
 
