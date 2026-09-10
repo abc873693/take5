@@ -5,6 +5,11 @@ on:
     # 目標 08:00 TPE (00:00 UTC)；GitHub 排程實測延遲約 +50 分 → 實際落在 ~09:00。是否真的打卡由 take5-clock.ts 判斷
     - cron: '0 0 * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只組 payload 不送出（驗證座標設定用）'
+        type: boolean
+        default: false
 
 jobs:
   clock-in:
@@ -26,4 +31,5 @@ jobs:
           LATITUDE: ${{ vars.LATITUDE }}
           LONGITUDE: ${{ vars.LONGITUDE }}
           USE_MACHINE_LOCATION: '0'
+          CLOCK_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: npx -y tsx take5-clock.ts in
