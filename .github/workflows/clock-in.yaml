@@ -23,7 +23,7 @@ jobs:
           COMPANY_CODE: ${{ secrets.COMPANY_CODE }}
           EMAIL: ${{ secrets.EMAIL }}
           PASSWORD: ${{ secrets.PASSWORD }}
-          LATITUDE: ${{ secrets.LATITUDE }}
-          LONGITUDE: ${{ secrets.LONGITUDE }}
+          LATITUDE: ${{ vars.LATITUDE }}
+          LONGITUDE: ${{ vars.LONGITUDE }}
           USE_MACHINE_LOCATION: '0'
         run: npx -y tsx take5-clock.ts in
