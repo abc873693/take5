@@ -146,6 +146,30 @@ interface ClockInOutResponse {
   [k: string]: unknown;
 }
 
+// /api/ATS/GetAttendanceList 回的一天一筆；clockInOutList 是該日所有打卡明細
+interface AttendanceClock {
+  InOut: boolean;
+  MachineCode?: string;
+  MachineName?: string;
+  Latitude?: number;
+  Longitude?: number;
+  ClockTime: string; // "yyyy/MM/dd HH:mm:ss"
+  ValidType?: number;
+  [k: string]: unknown;
+}
+
+interface AttendanceDay {
+  workDate: string; // "yyyy/MM/dd"
+  rosterName?: string;
+  locationName?: string;
+  inTime?: string | null;
+  outTime?: string | null;
+  actualWorkHour?: number;
+  result?: string; // 遲到 / 早退 / 曠職 …
+  clockInOutList?: AttendanceClock[];
+  [k: string]: unknown;
+}
+
 // ─── Client ───────────────────────────────────────────────────
 class Take5Client {
   private apiUrl?: string;
@@ -221,6 +245,25 @@ class Take5Client {
       throw new Error(`GetEmployee failed: ${res.status} ${await res.text()}`);
     }
     return (await res.json()) as EmployeeResponse;
+  }
+
+  /**
+   * GET /api/ATS/GetAttendanceList — 出勤紀錄（App 月曆頁/打卡記錄列表同一支）。
+   * 日期用 yyyy/MM/dd；改成 yyyy-MM-dd 後端會回空陣列而不是報錯。
+   */
+  async getAttendanceList(
+    empid: string | number,
+    startDate: string,
+    endDate: string,
+  ): Promise<AttendanceDay[]> {
+    const qs = new URLSearchParams({ empid: String(empid), startDate, endDate });
+    const res = await fetch(`${this.apiUrl}/api/ATS/GetAttendanceList?${qs.toString()}`, {
+      headers: this.authHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`GetAttendanceList failed: ${res.status} ${await res.text()}`);
+    }
+    return (await res.json()) as AttendanceDay[];
   }
 
   /** 4. 送出打卡 */
@@ -1101,6 +1144,68 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
 }
 
 // ─── 子指令：打卡（原本的流程）───────────────────────────────
+// ─── 子指令：出勤紀錄 ─────────────────────────────────────────
+//   attendance [days]                  → 最近 N 天（預設 30）
+//   attendance <start> <end>           → 指定區間（yyyy/MM/dd 或 yyyy-MM-dd）
+//   --json                             → 直接印後端原始回應
+async function runAttendance(): Promise<void> {
+  const args = process.argv.slice(3).filter((a) => !a.startsWith("--"));
+  const json = process.argv.includes("--json");
+
+  let startDate: string;
+  let endDate: string;
+  if (args.length >= 2) {
+    startDate = normalizeDate(args[0]);
+    endDate = normalizeDate(args[1]);
+  } else {
+    const days = args.length === 1 ? Number(args[0]) : 30;
+    if (!Number.isFinite(days) || days <= 0) {
+      throw new Error("天數要是正整數，例如：attendance 14");
+    }
+    endDate = todayStr();
+    startDate = todayStr(new Date(Date.now() - (days - 1) * 86400000));
+  }
+
+  const client = await connect();
+  const emp = await client.getEmployee(0);
+  const list = await client.getAttendanceList(emp.EmpInfo.empid, startDate, endDate);
+  if (json) {
+    console.log(JSON.stringify(list, null, 2));
+    return;
+  }
+  if (list.length === 0) {
+    console.log(`（${startDate} ~ ${endDate} 沒有出勤資料）`);
+    return;
+  }
+
+  console.log(`[attendance] ${startDate} ~ ${endDate}，共 ${list.length} 天\n`);
+  const hhmm = (t?: string | null) => (t ? t.slice(11, 16) : "--:--");
+  for (const d of list) {
+    const clocks = d.clockInOutList ?? [];
+    // 只有 ValidType=1 才是本腳本/App 送的 GPS 卡，其餘多半是門禁等其他來源
+    const gps = clocks.filter((c) => c.ValidType === 1).length;
+    const detail = clocks
+      .map((c) => `${hhmm(c.ClockTime)}${c.InOut ? "↑" : "↓"}${c.ValidType === 1 ? "" : "*"}`)
+      .join(" ");
+    console.log(
+      `${d.workDate}  ${(d.rosterName ?? "-").padEnd(12)}` +
+        ` ${hhmm(d.inTime)}~${hhmm(d.outTime)}` +
+        ` ${(d.result ?? "").padEnd(10)}` +
+        ` ${String(clocks.length).padStart(2)} 筆（GPS ${gps}）` +
+        (detail ? `  ${detail}` : ""),
+    );
+  }
+
+  const abnormal = list.filter((d) => d.result && d.result !== "休假");
+  console.log(`\n* = 非 GPS 來源（ValidType≠1）`);
+  if (abnormal.length > 0) {
+    console.log(`異常 ${abnormal.length} 天：`);
+    for (const d of abnormal) console.log(`  ${d.workDate} ${d.result}`);
+  } else {
+    console.log("區間內沒有異常紀錄。");
+  }
+}
+
 async function runClock(inOutArg?: string): Promise<void> {
   const companyCode = requireEnv("COMPANY_CODE");
   const email = requireEnv("EMAIL");
@@ -1208,6 +1313,7 @@ async function runHalfday(): Promise<void> {
 //   npx tsx take5-clock.ts forminfo <code>  → dump 表單欄位 schema
 //   npx tsx take5-clock.ts apply-ot ...     → 加班申請（預設 dry-run，--send 才送並查狀態）
 //   npx tsx take5-clock.ts status [formcode]→ 查我的申請單狀態（審核中 + 已結案）
+//   npx tsx take5-clock.ts attendance [days|start end] → 出勤紀錄
 //   npx tsx take5-clock.ts workday [--list] → 查今天是不是上班日（班表）
 //   npx tsx take5-clock.ts halfday          → 半天假交界打卡（14:00 cron 用）
 //   打卡預設會先檢查班表，非上班日自動跳過；加 --force 強制打卡
@@ -1220,6 +1326,7 @@ async function main(): Promise<void> {
   if (sub === "apply-ot") return runApplyOt();
   if (sub === "status") return runStatus();
   if (sub === "leave") return runLeave();
+  if (sub === "attendance") return runAttendance();
   if (sub === "workday") return runWorkday();
   if (sub === "halfday") return runHalfday();
   return runClock(sub); // sub 為 in|out|undefined

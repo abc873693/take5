@@ -34,6 +34,17 @@ App 把結果存進 Capacitor `Preferences`（key: `SERVER_KEY`），登出 / �
 | GET | `/api/ATS/BeforeClockInOut` | 打卡前狀態檢查（顯示班別、是否需打卡） |
 | GET | `/api/ATS/GetAttendanceList` | 出勤紀錄；月曆頁、打卡記錄列表都用這支 |
 
+#### `GET /api/ATS/GetAttendanceList` Query
+
+```
+?empid=<empid>&startDate=yyyy/MM/dd&endDate=yyyy/MM/dd
+```
+
+三個參數缺一不可（少帶會 404）。日期分隔符必須是 `/`，用 `-` 會回空陣列而不是報錯。
+回傳一天一筆，含 `inTime` / `outTime` / `result`（遲到、早退、曠職…）與 `clockInOutList`
+打卡明細（`ClockTime` / `InOut` / `ValidType` / 座標）。`ValidType=1` 才是 GPS 打卡，
+門禁等其他來源是 `0` 且沒有座標。`take5-clock.ts attendance` 即呼叫此支。
+
 #### `POST /api/ATS/clockInOut` Request
 
 ```jsonc

@@ -40,6 +40,12 @@ npx tsx take5-clock.ts status --detail           # 連同表單填寫內容（�
 
 # 查假別餘額（特休、生日假…）
 npx tsx take5-clock.ts leave
+
+# 查出勤紀錄（打卡時間、遲到早退曠職）
+npx tsx take5-clock.ts attendance                      # 最近 30 天
+npx tsx take5-clock.ts attendance 7                    # 最近 7 天
+npx tsx take5-clock.ts attendance 2026/09/01 2026/09/30 # 指定區間
+npx tsx take5-clock.ts attendance 7 --json             # 後端原始回應
 ```
 
 `forms` / `forminfo` 子指令說明見 [`docs/api.md`](docs/api.md) 的「動態表單機制」一節。
