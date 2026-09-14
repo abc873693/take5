@@ -513,6 +513,15 @@ function jitterCoords(
   return { lat: round6(lat + dLat), lng: round6(lng + dLng) };
 }
 
+/**
+ * 座標在 log 裡預設只印到小數第二位（約 1km 精度）。
+ * 這支腳本會跑在 public repo 的 GitHub Actions，log 任何人都讀得到，
+ * 完整座標等於公開住家/辦公室位置。需要完整值時設 DEBUG=1 在本機看。
+ */
+function maskCoord(n: number): string {
+  return process.env.DEBUG ? String(n) : `${n.toFixed(2)}xx`;
+}
+
 // Haversine — 兩點之間的地表距離（公尺），跟 App utils.getGPSDistance 同義
 function haversineMeters(
   lat1: number,
@@ -1091,7 +1100,11 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
     "\n      machineCode =", machine.machineCode,
     machine.machineName ? `(${machine.machineName})` : "",
     "\n      groupCode   =", emp.MachineGroup.code,
-    "\n      machineLoc  =", machineLat, ",", machineLng, `(radius=${machineRadius}m)`,
+    "\n      machineLoc  =",
+    machineLat !== undefined ? maskCoord(machineLat) : machineLat,
+    ",",
+    machineLng !== undefined ? maskCoord(machineLng) : machineLng,
+    `(radius=${machineRadius}m)`,
   );
 
   const useMachineLoc = process.env.USE_MACHINE_LOCATION === "1";
@@ -1105,8 +1118,8 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
   const { lat: sendLat, lng: sendLng } = jitterCoords(baseLat, baseLng, jitterMeters);
   if (jitterMeters > 0) {
     console.log(
-      `      GPS 飄移     = ±${jitterMeters}m → ${sendLat}, ${sendLng}`,
-      `(base ${baseLat}, ${baseLng}, 偏移 ${haversineMeters(baseLat, baseLng, sendLat, sendLng).toFixed(1)}m)`,
+      `      GPS 飄移     = ±${jitterMeters}m → ${maskCoord(sendLat)}, ${maskCoord(sendLng)}`,
+      `(base ${maskCoord(baseLat)}, ${maskCoord(baseLng)}, 偏移 ${haversineMeters(baseLat, baseLng, sendLat, sendLng).toFixed(1)}m)`,
     );
   }
 
@@ -1121,7 +1134,7 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
   }
 
   console.log(
-    `[4/4] 送出打卡 (GPS) ${inOut ? "上班" : "下班"} — ${sendLat}, ${sendLng}`,
+    `[4/4] 送出打卡 (GPS) ${inOut ? "上班" : "下班"} — ${maskCoord(sendLat)}, ${maskCoord(sendLng)}`,
     useMachineLoc ? "(USE_MACHINE_LOCATION=1)" : "",
   );
   const payload: ClockInOutPayload = {
@@ -1136,7 +1149,10 @@ async function performClock(client: Take5Client, emp: EmployeeResponse, inOut: b
     ValidType: ClockValidType.GPS,
   };
   if (process.argv.includes("--dry-run") || process.env.CLOCK_DRY_RUN === "1") {
-    console.log("✓ dry-run，未送出。payload =", JSON.stringify(payload, null, 2));
+    const shown = process.env.DEBUG
+      ? payload
+      : { ...payload, Latitude: maskCoord(sendLat), Longitude: maskCoord(sendLng) };
+    console.log("✓ dry-run，未送出。payload =", JSON.stringify(shown, null, 2));
     return;
   }
   const result = await client.clockInOut(payload);
