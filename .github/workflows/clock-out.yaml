@@ -1,4 +1,4 @@
-name: Auto Clock-Out 6:30PM (script gates workdays)
+name: Auto Clock-Out 6:20PM (script gates workdays)
 
 on:
   schedule:
