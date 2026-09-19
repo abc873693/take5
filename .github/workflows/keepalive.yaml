@@ -1,0 +1,37 @@
+name: Keepalive (prevent schedule deactivation)
+
+on:
+  schedule:
+    # 每月 1 號 11:00 TPE (03:00 UTC)。GitHub 對 60 天沒有 activity 的 repo 會停掉所有
+    # scheduled workflow（2026-08 就發生過一次，打卡整整停了三週）。這支每月製造一次
+    # activity 並把三支打卡 workflow 重新 enable 一遍。
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Push activity marker
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/last-keepalive
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/last-keepalive
+          git commit -m 'chore(ci): keepalive'
+          git push
+
+      - name: Re-enable clock workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for wf in clock-in.yaml clock-out.yaml clock-half.yaml; do
+            gh workflow enable "$wf" --repo "$GITHUB_REPOSITORY" || true
+          done
