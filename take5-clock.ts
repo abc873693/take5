@@ -970,6 +970,60 @@ async function getLeaveDates(client: Take5Client): Promise<Map<string, LeaveDay>
   return map;
 }
 
+// ─── 天然災害停班（人事行政總處）──────────────────────────────
+// 颱風假由各縣市前一晚宣布，Take5 班表不會即時反映，所以打卡前直接看總處公告頁。
+// 頁首日期（民國年）+ 各縣市一列文字，例如「今天停止上班、停止上課。」
+const DGPA_URL = "https://www.dgpa.gov.tw/typh/daily/nds.html";
+
+interface DisasterStop {
+  stopIn: boolean;
+  stopOut: boolean;
+  text: string;
+}
+
+async function getDisasterStop(date: string): Promise<DisasterStop | null> {
+  const city = (process.env.WORK_CITY || "臺北市").replace(/台/g, "臺");
+  const res = await fetch(DGPA_URL, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`DGPA HTTP ${res.status}`);
+  const html = await res.text();
+  const strip = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+  const ymd = /(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*天然災害/.exec(strip(html));
+  if (!ymd) throw new Error("DGPA 頁面找不到公告日期");
+  const p = (n: string) => n.padStart(2, "0");
+  const pageDate = `${Number(ymd[1]) + 1911}/${p(ymd[2])}/${p(ymd[3])}`;
+
+  const rows = html.split(/<TR[\s>]/i).map(strip);
+  const row = rows.find((r) => r.split(" ").includes(city));
+  if (!row) return null;
+  const text = row.slice(row.indexOf(city) + city.length).trim();
+
+  const yesterday = new Date(date.replace(/\//g, "-"));
+  yesterday.setDate(yesterday.getDate() - 1);
+  const target =
+    pageDate === date ? /今天/ : pageDate === todayStr(yesterday) ? /明天/ : null;
+  if (!target) return null;
+  const clause = text.split(/[。；;]/).find((s) => target.test(s) && /停止上班/.test(s));
+  if (!clause) return null;
+
+  const partial = /上午|中午|下午|晚上|時起|點起/.test(clause);
+  const morningOnly = partial && /上午/.test(clause) && !/下午|晚上|起/.test(clause);
+  return {
+    stopIn: !partial || morningOnly,
+    stopOut: !partial || !morningOnly,
+    text: `${city}：${clause.trim()}`,
+  };
+}
+
+async function getDisasterStopSafe(date: string): Promise<DisasterStop | null> {
+  try {
+    return await getDisasterStop(date);
+  } catch (e) {
+    console.log(`[warn] 查詢停班公告失敗（${(e as Error).message}），視為照常上班`);
+    return null;
+  }
+}
+
 // 綜合判定某日某段（inOut）是否需打卡：班表上班日/加班日 → 需打卡；
 // 全天(或多日)請假 → 免打卡；半天請假 → 落在請假時段的那張卡跳過、另一張照打。
 function shouldClock(
@@ -978,6 +1032,7 @@ function shouldClock(
   leaveDates: Map<string, LeaveDay>,
   date: string,
   inOut: boolean,
+  disaster: DisasterStop | null = null,
 ): { clock: boolean; reason: string } {
   const e = roster?.find((r) => r.workdate === date);
   const workStart = e?.workstarthour || "09:00";
@@ -988,6 +1043,9 @@ function shouldClock(
 
   if (lv && lv.full && !ot) {
     return { clock: false, reason: "全天請假" };
+  }
+  if (disaster && !ot && (inOut ? disaster.stopIn : disaster.stopOut)) {
+    return { clock: false, reason: `天然災害停班（${disaster.text}）` };
   }
   const clockDay = isRosterWork || !!ot || (lv && !lv.full);
   if (!clockDay) {
@@ -1010,19 +1068,21 @@ function shouldClock(
 // workday --list   列出班表內各天（含加班/半天假）
 async function runWorkday(): Promise<void> {
   const client = await connect();
-  const [emp, otDates, leaveDates] = await Promise.all([
+  const today = todayStr();
+  const [emp, otDates, leaveDates, disaster] = await Promise.all([
     client.getEmployee(0),
     getOvertimeDatesSafe(client),
     getLeaveDatesSafe(client),
+    getDisasterStopSafe(today),
   ]);
   const fmt = (date: string) => {
-    const i = shouldClock(emp.RosterList, otDates, leaveDates, date, true);
-    const o = shouldClock(emp.RosterList, otDates, leaveDates, date, false);
+    const d = date === today ? disaster : null;
+    const i = shouldClock(emp.RosterList, otDates, leaveDates, date, true, d);
+    const o = shouldClock(emp.RosterList, otDates, leaveDates, date, false, d);
     const need = i.clock || o.clock;
     const reason = i.reason === o.reason ? i.reason : `${i.reason}；${o.reason}`;
     return { need, flags: `上${i.clock ? "✓" : "✗"} 下${o.clock ? "✓" : "✗"}`, reason };
   };
-  const today = todayStr();
   const t = fmt(today);
   console.log(`[workday] ${today}：${t.need ? "需打卡 ✓" : "免打卡 ✗"}（${t.flags}）— ${t.reason}`);
   if (process.argv.includes("--list")) {
@@ -1274,11 +1334,12 @@ async function runClock(inOutArg?: string): Promise<void> {
   // exit 0 給 cron 用不報錯。加 --force 或 CLOCK_FORCE=1 可無視強制打卡。
   const force = process.argv.includes("--force") || process.env.CLOCK_FORCE === "1";
   const today = todayStr();
-  const [otDates, leaveDates] = await Promise.all([
+  const [otDates, leaveDates, disaster] = await Promise.all([
     getOvertimeDatesSafe(client),
     getLeaveDatesSafe(client),
+    getDisasterStopSafe(today),
   ]);
-  const decision = shouldClock(emp.RosterList, otDates, leaveDates, today, inOut);
+  const decision = shouldClock(emp.RosterList, otDates, leaveDates, today, inOut, disaster);
   console.log(`      班表檢查   = ${today} ${inOut ? "上班" : "下班"} → ${decision.reason}`);
   if (!decision.clock && !force) {
     console.log(`✓ 今天此段免打卡（${decision.reason}），跳過。要強制打卡加 --force。`);
@@ -1302,6 +1363,11 @@ async function runHalfday(): Promise<void> {
   const lv = leaveDates.get(today);
   if (!lv || lv.full) {
     console.log(`✓ 今天無半天假（${lv ? "全天/多日請假" : "無請假"}），14:00 不動作。`);
+    return;
+  }
+  const disaster = await getDisasterStopSafe(today);
+  if (disaster) {
+    console.log(`✓ 天然災害停班（${disaster.text}），14:00 不動作。`);
     return;
   }
   const e = emp.RosterList?.find((r) => r.workdate === today);
