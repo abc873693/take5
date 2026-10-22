@@ -31,5 +31,6 @@ jobs:
           LATITUDE: ${{ vars.LATITUDE }}
           LONGITUDE: ${{ vars.LONGITUDE }}
           USE_MACHINE_LOCATION: '0'
+          TZ: Asia/Taipei
           CLOCK_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: npx -y tsx take5-clock.ts in

@@ -26,4 +26,5 @@ jobs:
           LATITUDE: ${{ vars.LATITUDE }}
           LONGITUDE: ${{ vars.LONGITUDE }}
           USE_MACHINE_LOCATION: '0'
+          TZ: Asia/Taipei
         run: npx -y tsx take5-clock.ts halfday
