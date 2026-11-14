@@ -954,14 +954,27 @@ async function getLeaveDates(client: Take5Client): Promise<Map<string, LeaveDay>
         const to = String(row[`${LEAVE_TABLE}_specifytodate`] ?? "");
         if (!from) continue;
         const days = Number(row[`${LEAVE_TABLE}_leavedays`] ?? 1);
-        const multiDay = !!to && to !== from;
-        const ld: LeaveDay = {
-          days,
-          from: hhmm(row[`${LEAVE_TABLE}_leavefromtime`]),
-          to: hhmm(row[`${LEAVE_TABLE}_leavetotime`]),
-          full: multiDay || days >= 1,
-        };
-        for (const d of dateRange(from, to)) map.set(d, ld);
+        const fromTime = hhmm(row[`${LEAVE_TABLE}_leavefromtime`]);
+        const toTime = hhmm(row[`${LEAVE_TABLE}_leavetotime`]);
+        const range = dateRange(from, to);
+        if (range.length <= 1) {
+          map.set(range[0] ?? from, { days, from: fromTime, to: toTime, full: days >= 1 });
+          continue;
+        }
+        // 跨日假單（例如 11/13 14:00 → 11/16 14:00）首末日可能只請半天：
+        // 首日 = 請假起～當天結束、末日 = 當天開始～請假迄，交給 shouldClock 依班表工時判斷哪張卡跳過；
+        // 中間日才是全天。
+        range.forEach((d, i) => {
+          const first = i === 0;
+          const last = i === range.length - 1;
+          if (!first && !last) {
+            map.set(d, { days: 1, from: "00:00", to: "23:59", full: true });
+            return;
+          }
+          const dayFrom = first ? fromTime || "00:00" : "00:00";
+          const dayTo = last ? toTime || "23:59" : "23:59";
+          map.set(d, { days, from: dayFrom, to: dayTo, full: dayFrom <= "00:00" && dayTo >= "23:59" });
+        });
       }
     } catch {
       /* 個別失敗略過 */
@@ -1041,7 +1054,8 @@ function shouldClock(
   const ot = otDates.get(date);
   const lv = leaveDates.get(date);
 
-  if (lv && lv.full && !ot) {
+  const coversWholeDay = !!lv && inWindow(workStart, lv.from, lv.to) && inWindow(workEnd, lv.from, lv.to);
+  if (lv && (lv.full || coversWholeDay) && !ot) {
     return { clock: false, reason: "全天請假" };
   }
   if (disaster && !ot && (inOut ? disaster.stopIn : disaster.stopOut)) {
@@ -1051,7 +1065,7 @@ function shouldClock(
   if (!clockDay) {
     return { clock: false, reason: classifyWorkday(roster, date).reason };
   }
-  if (lv && !lv.full) {
+  if (lv && !lv.full && !coversWholeDay) {
     const ref = inOut ? workStart : workEnd; // 上班看工時起、下班看工時迄
     const side = inOut ? "上班" : "下班";
     if (inWindow(ref, lv.from, lv.to)) {
